@@ -1,4 +1,10 @@
-use axum::{routing::get, Router};
+use axum::{
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tracing::info;
 
@@ -11,7 +17,9 @@ async fn main() {
         .with_level(true)
         .init();
 
-    let app = Router::new().route("/", get(root));
+    let app = Router::new()
+        .route("/", get(root))
+        .route("/transaction", post(submit_transaction));
 
     let port = 3000;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -24,4 +32,25 @@ async fn main() {
 
 async fn root() -> &'static str {
     "Hello, World!"
+}
+
+async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl IntoResponse {
+    let user = Transaction {
+        id: 1337,
+        data: payload.data,
+    };
+
+    (StatusCode::OK, Json(user))
+}
+
+#[derive(Deserialize)]
+struct SubmitTransaction {
+    data: String,
+}
+
+// the output to our `create_user` handler
+#[derive(Serialize)]
+struct Transaction {
+    id: u64,
+    data: String,
 }
