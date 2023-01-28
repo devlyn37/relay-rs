@@ -35,22 +35,29 @@ async fn root() -> &'static str {
 }
 
 async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl IntoResponse {
-    let user = Transaction {
-        id: 1337,
+    info!("Transaction to submit: \n{:?}", payload);
+    let txn = Transaction {
         data: payload.data,
+        id: 1,
+        to: payload.to,
+        value: payload.value,
     };
 
-    (StatusCode::OK, Json(user))
+    (StatusCode::OK, Json(txn))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct SubmitTransaction {
     data: String,
+    to: String,
+    value: String,
 }
 
 // the output to our `create_user` handler
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct Transaction {
     id: u64,
     data: String,
+    to: String,
+    value: String,
 }
