@@ -4,12 +4,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tracing::info;
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
     tracing_subscriber::fmt()
         .compact()
         .with_file(true)
@@ -35,6 +37,8 @@ async fn root() -> &'static str {
 }
 
 async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl IntoResponse {
+    let pk = std::env::var("PK").unwrap();
+
     info!("Transaction to submit: \n{:?}", payload);
     let txn = Transaction {
         data: payload.data,
