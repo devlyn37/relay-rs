@@ -8,6 +8,9 @@ edition = "2021"
 [dependencies]
 axum = "0.6.4"
 dotenv = "0.15.0"
+ethers-core = "1.0.2"
+ethers-middleware = "1.0.2"
+ethers-providers = "1.0.2"
 ethers-signers = "1.0.2"
 serde = { version = "1.0.152", features = ["derive"] }
 tokio = { version = "1.24.2", features = ["full"] }

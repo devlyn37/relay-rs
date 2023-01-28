@@ -5,8 +5,13 @@ use axum::{
     Json, Router,
 };
 use dotenv::dotenv;
+use ethers_core::types::{
+    transaction::eip2718::TypedTransaction, Address, Eip1559TransactionRequest, U256,
+};
+use ethers_middleware::SignerMiddleware;
+use ethers_providers::{Http, Middleware, Provider};
 use ethers_signers::{LocalWallet, Signer};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{net::SocketAddr, str::FromStr};
 use tracing::info;
 
@@ -39,32 +44,49 @@ async fn root() -> &'static str {
 
 async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl IntoResponse {
     let pk_hex_string = std::env::var("PK").unwrap();
-    let wallet = LocalWallet::from_str(&pk_hex_string).unwrap();
+    let provider_url = std::env::var("PROVIDER_URL").unwrap();
+    let signer = LocalWallet::from_str(&pk_hex_string).unwrap();
+    let address: Address = payload.to.parse().unwrap();
+    let provider =
+        Provider::<Http>::try_from(&provider_url).expect("could not instantiate HTTP Provider");
 
-    info!("Wallet with address {}", wallet.address());
+    let txn = TypedTransaction::Eip1559(
+        Eip1559TransactionRequest::new()
+            .to(address)
+            .value(U256::from_dec_str(&payload.value).unwrap()),
+    );
 
-    let txn = Transaction {
-        data: payload.data,
-        id: 1,
-        to: payload.to,
-        value: payload.value,
-    };
+    info!(
+        "Wallet with address {}, is sending transaction {:?}",
+        signer.address(),
+        txn
+    );
 
-    (StatusCode::OK, Json(txn))
+    let client = SignerMiddleware::new_with_provider_chain(provider.clone(), signer.clone())
+        .await
+        .unwrap();
+    let pending_tx = client
+        .send_transaction(txn, None)
+        .await
+        .expect("Something went wrong when sending transaction");
+
+    info!("Transaction sent, waiting for it to be mined");
+
+    let receipt = pending_tx
+        .confirmations(2)
+        .await
+        .expect("Something went wrong while waiting for confirmations");
+
+    info!(
+        "Transaction mined with two confirmations, here's the receipt {:?}",
+        receipt
+    );
+
+    (StatusCode::OK, Json(receipt))
 }
 
 #[derive(Deserialize, Debug)]
 struct SubmitTransaction {
-    data: String,
-    to: String,
-    value: String,
-}
-
-// the output to our `create_user` handler
-#[derive(Serialize, Debug)]
-struct Transaction {
-    id: u64,
-    data: String,
     to: String,
     value: String,
 }
