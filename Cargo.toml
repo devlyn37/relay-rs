@@ -13,7 +13,7 @@ ethers-core = "1.0.2"
 ethers-middleware = "1.0.2"
 ethers-providers = "1.0.2"
 ethers-signers = "1.0.2"
-hex = "0.4.3"
+hex = { version = "0.4.3", features = ["serde"] }
 serde = { version = "1.0.152", features = ["derive"] }
 tokio = { version = "1.24.2", features = ["full"] }
 tracing = "0.1.37"
