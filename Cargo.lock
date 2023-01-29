@@ -1681,6 +1681,7 @@ dependencies = [
  "ethers-middleware",
  "ethers-providers",
  "ethers-signers",
+ "hex",
  "serde",
  "tokio",
  "tracing",

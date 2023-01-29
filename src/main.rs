@@ -53,8 +53,11 @@ async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl Into
     let txn = TypedTransaction::Eip1559(
         Eip1559TransactionRequest::new()
             .to(address)
-            .value(U256::from_dec_str(&payload.value).unwrap()),
+            .value(U256::from_dec_str(&payload.value).unwrap())
+            .data(hex::decode(payload.data).unwrap()),
     );
+
+    // TODO fetch the abi and add nice logging here!
 
     info!(
         "Wallet with address {}, is sending transaction {:?}",
@@ -70,7 +73,10 @@ async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl Into
         .await
         .expect("Something went wrong when sending transaction");
 
-    info!("Transaction sent, waiting for it to be mined");
+    info!(
+        "Transaction sent, hash: {}.\nWaiting for it to be mined...",
+        pending_tx.tx_hash()
+    );
 
     let receipt = pending_tx
         .confirmations(2)
@@ -89,4 +95,5 @@ async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl Into
 struct SubmitTransaction {
     to: String,
     value: String,
+    data: String,
 }
