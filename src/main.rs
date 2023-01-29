@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context, Error};
 use axum::{
     http::StatusCode,
     response::IntoResponse,
@@ -6,7 +7,8 @@ use axum::{
 };
 use dotenv::dotenv;
 use ethers_core::types::{
-    transaction::eip2718::TypedTransaction, Address, Eip1559TransactionRequest, U256,
+    transaction::eip2718::TypedTransaction, Address, Eip1559TransactionRequest, TransactionReceipt,
+    U256,
 };
 use ethers_middleware::SignerMiddleware;
 use ethers_providers::{Http, Middleware, Provider};
@@ -50,45 +52,46 @@ async fn submit_transaction(Json(payload): Json<SubmitTransaction>) -> impl Into
     let provider =
         Provider::<Http>::try_from(&provider_url).expect("could not instantiate HTTP Provider");
 
-    let txn = TypedTransaction::Eip1559(
-        Eip1559TransactionRequest::new()
-            .to(address)
-            .value(U256::from_dec_str(&payload.value).unwrap())
-            .data(hex::decode(payload.data).unwrap()),
-    );
-
-    // TODO fetch the abi and add nice logging here!
-
-    info!(
-        "Wallet with address {}, is sending transaction {:?}",
-        signer.address(),
-        txn
-    );
+    let request = Eip1559TransactionRequest::new()
+        .to(address)
+        .value(U256::from_dec_str(&payload.value).unwrap())
+        .data(hex::decode(payload.data).unwrap());
 
     let client = SignerMiddleware::new_with_provider_chain(provider.clone(), signer.clone())
         .await
         .unwrap();
-    let pending_tx = client
-        .send_transaction(txn, None)
+
+    let receipt = handle_transaction(request, client)
         .await
-        .expect("Something went wrong when sending transaction");
+        .expect("Something went wrong when submitting transaction");
+
+    (StatusCode::OK, Json(receipt))
+}
+
+async fn handle_transaction(
+    txn_request: Eip1559TransactionRequest,
+    client: SignerMiddleware<Provider<Http>, LocalWallet>,
+) -> Result<TransactionReceipt, Error> {
+    info!(
+        "Wallet with address {}, is sending transaction {:?}",
+        client.signer().address(),
+        txn_request
+    );
+
+    let pending_tx = client
+        .send_transaction(TypedTransaction::Eip1559(txn_request), None)
+        .await
+        .with_context(|| "Error submitting transaction")?;
 
     info!(
         "Transaction sent, hash: {}.\nWaiting for it to be mined...",
         pending_tx.tx_hash()
     );
 
-    let receipt = pending_tx
+    pending_tx
         .confirmations(2)
-        .await
-        .expect("Something went wrong while waiting for confirmations");
-
-    info!(
-        "Transaction mined with two confirmations, here's the receipt {:?}",
-        receipt
-    );
-
-    (StatusCode::OK, Json(receipt))
+        .await?
+        .ok_or(anyhow!("Transaction was not mined"))
 }
 
 #[derive(Deserialize, Debug)]
