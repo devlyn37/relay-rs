@@ -2,7 +2,12 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::po
 use dotenv::dotenv;
 use ethers::{
     core::types::{serde_helpers::Numeric, Address, Eip1559TransactionRequest},
-    middleware::{nonce_manager::NonceManagerMiddleware, signer::SignerMiddleware},
+    middleware::{
+        gas_escalator::{Frequency, GeometricGasPrice},
+        nonce_manager::NonceManagerMiddleware,
+        signer::SignerMiddleware,
+    },
+    prelude::gas_escalator::GasEscalatorMiddleware,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
 };
@@ -10,8 +15,12 @@ use serde::Deserialize;
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::info;
 
+type ConfigedProvider = NonceManagerMiddleware<
+    SignerMiddleware<GasEscalatorMiddleware<Provider<Http>, GeometricGasPrice>, LocalWallet>,
+>;
+
 struct AppState {
-    provider: NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    provider: ConfigedProvider,
 }
 
 #[tokio::main]
@@ -35,10 +44,12 @@ async fn main() {
     let address = signer.address();
 
     let provider = Provider::<Http>::try_from(provider_url)
-        .expect("Server not configured correctly, can't connect to provider");
+        .expect("Server not configured correctly, invalid provider url");
+    let escalator = GeometricGasPrice::new(1.125, 60u64, None::<u64>);
+    let provider = GasEscalatorMiddleware::new(provider, escalator, Frequency::PerBlock);
     let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
         .await
-        .expect("Could not initialize chain");
+        .expect("Could not connect to provider");
     let provider = NonceManagerMiddleware::new(provider, address);
 
     let shared_state = Arc::new(AppState { provider });
