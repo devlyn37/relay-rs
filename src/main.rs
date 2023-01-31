@@ -1,4 +1,8 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use anyhow::{Context, Error};
+use axum::{
+    extract::State, http::StatusCode, response::IntoResponse, response::Response, routing::post,
+    Json, Router,
+};
 use dotenv::dotenv;
 use ethers::{
     core::types::{serde_helpers::Numeric, Address, Eip1559TransactionRequest},
@@ -10,6 +14,8 @@ use ethers::{
     prelude::gas_escalator::GasEscalatorMiddleware,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
+    types::TransactionReceipt,
+    utils::__serde_json::json,
 };
 use serde::Deserialize;
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
@@ -69,7 +75,7 @@ async fn main() {
 async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SubmitTransaction>,
-) -> impl IntoResponse {
+) -> Result<Json<Option<TransactionReceipt>>, AppError> {
     let request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
@@ -78,14 +84,16 @@ async fn relay_transaction(
         .provider
         .send_transaction(request, None)
         .await
-        .expect("Something went wrong while submitting transaction");
+        .with_context(|| "Error submitting transaction")?;
+
     let hash = pending_tx.tx_hash();
     info!("Transaction sent, hash: {:?}.", hash);
 
     let receipt = pending_tx.confirmations(2).await.unwrap();
+
     info!("{:?} mined.", hash);
 
-    (StatusCode::OK, Json(receipt))
+    Ok(Json(receipt))
 }
 
 #[derive(Deserialize)]
@@ -94,4 +102,23 @@ struct SubmitTransaction {
     value: Numeric,
     #[serde(with = "hex::serde")]
     data: Vec<u8>,
+}
+
+#[derive(Debug)]
+enum AppError {
+    Standard(Error),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let error_message = format!("{:?}", self);
+        let body = Json(json!({ "error": error_message }));
+        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+    }
+}
+
+impl From<Error> for AppError {
+    fn from(inner: Error) -> Self {
+        AppError::Standard(inner)
+    }
 }
