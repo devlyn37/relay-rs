@@ -1,4 +1,3 @@
-use anyhow::{Context, Error};
 use axum::{
     extract::State, http::StatusCode, response::IntoResponse, response::Response, routing::post,
     Json, Router,
@@ -11,7 +10,7 @@ use ethers::{
         nonce_manager::NonceManagerMiddleware,
         signer::SignerMiddleware,
     },
-    prelude::gas_escalator::GasEscalatorMiddleware,
+    prelude::{gas_escalator::GasEscalatorMiddleware, nonce_manager::NonceManagerError},
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
     types::TransactionReceipt,
@@ -21,9 +20,10 @@ use serde::Deserialize;
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::info;
 
-type ConfigedProvider = NonceManagerMiddleware<
-    SignerMiddleware<GasEscalatorMiddleware<Provider<Http>, GeometricGasPrice>, LocalWallet>,
->;
+type Base =
+    SignerMiddleware<GasEscalatorMiddleware<Provider<Http>, GeometricGasPrice>, LocalWallet>;
+type ConfigedProvider = NonceManagerMiddleware<Base>;
+type ConfigedProviderError = NonceManagerError<Base>;
 
 struct AppState {
     provider: ConfigedProvider,
@@ -56,7 +56,7 @@ async fn main() {
     let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
         .await
         .expect("Could not connect to provider");
-    let provider = NonceManagerMiddleware::new(provider, address);
+    let provider: ConfigedProvider = NonceManagerMiddleware::new(provider, address);
 
     let shared_state = Arc::new(AppState { provider });
 
@@ -80,11 +80,7 @@ async fn relay_transaction(
         .to(payload.to)
         .value(payload.value)
         .data(payload.data);
-    let pending_tx = state
-        .provider
-        .send_transaction(request, None)
-        .await
-        .with_context(|| "Error submitting transaction")?;
+    let pending_tx = state.provider.send_transaction(request, None).await?;
 
     let hash = pending_tx.tx_hash();
     info!("Transaction sent, hash: {:?}.", hash);
@@ -106,7 +102,7 @@ struct SubmitTransaction {
 
 #[derive(Debug)]
 enum AppError {
-    Standard(Error),
+    ProviderError(ConfigedProviderError),
 }
 
 impl IntoResponse for AppError {
@@ -117,8 +113,8 @@ impl IntoResponse for AppError {
     }
 }
 
-impl From<Error> for AppError {
-    fn from(inner: Error) -> Self {
-        AppError::Standard(inner)
+impl From<ConfigedProviderError> for AppError {
+    fn from(inner: ConfigedProviderError) -> Self {
+        AppError::ProviderError(inner)
     }
 }
