@@ -5,26 +5,23 @@ use axum::{
 use dotenv::dotenv;
 use ethers::{
     core::types::{serde_helpers::Numeric, Address, Eip1559TransactionRequest},
-    middleware::{
-        gas_escalator::{Frequency, GeometricGasPrice},
-        nonce_manager::NonceManagerMiddleware,
-        signer::SignerMiddleware,
-    },
-    prelude::{gas_escalator::GasEscalatorMiddleware, nonce_manager::NonceManagerError},
+    middleware::{nonce_manager::NonceManagerMiddleware, signer::SignerMiddleware},
+    prelude::nonce_manager::NonceManagerError,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
     types::TransactionReceipt,
     utils::__serde_json::json,
 };
 use serde::Deserialize;
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
-use tracing::info;
+use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
+use tracing::{error, info, Level};
+mod escalator1559;
 
-type Base =
-    SignerMiddleware<GasEscalatorMiddleware<Provider<Http>, GeometricGasPrice>, LocalWallet>;
+type Base = escalator1559::Escalator1559Middleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
 type ConfigedProvider = NonceManagerMiddleware<Base>;
 type ConfigedProviderError = NonceManagerError<Base>;
 
+#[derive(Debug)]
 struct AppState {
     provider: ConfigedProvider,
 }
@@ -37,7 +34,9 @@ async fn main() {
         .with_file(true)
         .with_line_number(true)
         .with_level(true)
+        .with_max_level(Level::INFO)
         .init();
+    // console_subscriber::init();
 
     let pk_hex_string =
         std::env::var("PK").expect("Server not configured correctly, no private key");
@@ -51,11 +50,10 @@ async fn main() {
 
     let provider = Provider::<Http>::try_from(provider_url)
         .expect("Server not configured correctly, invalid provider url");
-    let escalator = GeometricGasPrice::new(1.125, 60u64, None::<u64>);
-    let provider = GasEscalatorMiddleware::new(provider, escalator, Frequency::PerBlock);
     let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
         .await
         .expect("Could not connect to provider");
+    let provider = escalator1559::Escalator1559Middleware::new(provider);
     let provider: ConfigedProvider = NonceManagerMiddleware::new(provider, address);
 
     let shared_state = Arc::new(AppState { provider });
@@ -72,32 +70,51 @@ async fn main() {
         .unwrap();
 }
 
+// #[tracing::instrument]
 async fn relay_transaction(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<SubmitTransaction>,
+    Json(payload): Json<RelayRequest>,
 ) -> Result<Json<Option<TransactionReceipt>>, AppError> {
     let request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
-        .data(payload.data);
+        .data(payload.data)
+        .max_fee_per_gas(100) // Hardcoding for now, as I play around with this
+        .max_priority_fee_per_gas(1);
     let pending_tx = state.provider.send_transaction(request, None).await?;
-
     let hash = pending_tx.tx_hash();
     info!("Transaction sent, hash: {:?}.", hash);
 
     let receipt = pending_tx.confirmations(2).await.unwrap();
+    tracing::info!("{:?} mined.", hash);
 
-    info!("{:?} mined.", hash);
+    let test = state
+        .provider
+        .get_transaction_receipt(hash)
+        .await
+        .unwrap()
+        .unwrap();
+
+    tracing::info!("receipt {:?}", test);
 
     Ok(Json(receipt))
 }
 
 #[derive(Deserialize)]
-struct SubmitTransaction {
+struct RelayRequest {
     to: Address,
     value: Numeric,
     #[serde(with = "hex::serde")]
     data: Vec<u8>,
+}
+
+impl fmt::Debug for RelayRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Relay Request")
+            .field("to", &self.to)
+            .field("data", &self.data) // TODO add value here
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -107,8 +124,8 @@ enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let error_message = format!("{:?}", self);
-        let body = Json(json!({ "error": error_message }));
+        error!("{:?}", self);
+        let body = Json(json!({"error": "connection issues, try again later!"}));
         (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
     }
 }

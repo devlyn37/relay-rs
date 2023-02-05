@@ -44,6 +44,7 @@ where
         tx: T,
         block: Option<BlockId>,
     ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
+        info!("Send Transaction from the escalator called");
         let tx = tx.into();
 
         let pending_tx = self
@@ -92,6 +93,7 @@ where
 
     /// Re-broadcasts pending transactions with a gas price escalator
     pub async fn escalate(&self) -> Result<(), GasEscalatorError<M>> {
+        info!("Monitoring for escalation!");
         let mut watcher: WatcherFuture = Box::pin(
             self.inner
                 .watch_blocks()
@@ -112,11 +114,14 @@ where
                 let receipt = self.get_transaction_receipt(tx_hash).await?;
                 info!(tx_hash = ?tx_hash, "checking if exists");
                 if receipt.is_none() {
+                    info!("Transaction wasn't minted, we're going to send a replacement out");
                     let old_gas_price = replacement_tx
                         .max_fee_per_gas
                         .expect("max fee per gas needs to be set");
                     let new_gas_price = old_gas_price * 125 / 100;
                     replacement_tx.max_fee_per_gas = Some(old_gas_price * 125 / 100);
+                    info!("old gas price {}", old_gas_price);
+                    info!("new gas price {}", new_gas_price);
 
                     // the tx hash will be different so we need to update it
                     let new_txhash = match self
