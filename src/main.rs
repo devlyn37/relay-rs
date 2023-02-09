@@ -75,15 +75,20 @@ async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RelayRequest>,
 ) -> Result<Json<Option<TransactionReceipt>>, AppError> {
+    let (max_fee_estimate, priority_fee_estimate) =
+        state.provider.estimate_eip1559_fees(None).await.unwrap();
+    let base_fee_estimate = max_fee_estimate - priority_fee_estimate;
     let request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
         .data(payload.data)
-        .max_fee_per_gas(100) // Hardcoding for now, as I play around with this
-        .max_priority_fee_per_gas(1);
+        .max_fee_per_gas(base_fee_estimate + 1)
+        .max_priority_fee_per_gas(1); // TODO fix this is just for testing
+    info!("Transaction: {:?}", request);
     let pending_tx = state.provider.send_transaction(request, None).await?;
     let hash = pending_tx.tx_hash();
     info!("Transaction sent, hash: {:?}.", hash);
+    info!("Pending txn: {:?}", pending_tx);
 
     let receipt = pending_tx.confirmations(2).await.unwrap();
     tracing::info!("{:?} mined.", hash);

@@ -44,8 +44,10 @@ where
         tx: T,
         block: Option<BlockId>,
     ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
-        info!("Send Transaction from the escalator called");
         let tx = tx.into();
+
+        info!("Hi sending a transaction from the escalator");
+        info!("{:?}", tx);
 
         let pending_tx = self
             .inner()
@@ -113,15 +115,39 @@ where
 
                 let receipt = self.get_transaction_receipt(tx_hash).await?;
                 info!(tx_hash = ?tx_hash, "checking if exists");
+
                 if receipt.is_none() {
-                    info!("Transaction wasn't minted, we're going to send a replacement out");
-                    let old_gas_price = replacement_tx
+                    info!("Transaction wasn't mined in the latest block, we're going to send a replacement out");
+                    let old_priority_fee = replacement_tx
+                        .max_priority_fee_per_gas
+                        .expect("max priority fee per gas needs to be set");
+                    let old_max_fee_per_gas = replacement_tx
                         .max_fee_per_gas
                         .expect("max fee per gas needs to be set");
-                    let new_gas_price = old_gas_price * 125 / 100;
-                    replacement_tx.max_fee_per_gas = Some(old_gas_price * 125 / 100);
-                    info!("old gas price {}", old_gas_price);
-                    info!("new gas price {}", new_gas_price);
+                    let old_base_fee = old_max_fee_per_gas - old_priority_fee;
+
+                    let (max_fee_estimate, priority_fee_estimate) =
+                        self.estimate_eip1559_fees(None).await.unwrap();
+                    let base_fee_estimate = max_fee_estimate - priority_fee_estimate;
+
+                    // Rule: both the tip and the max fee must be bumped by a minimum of 10% https://github.com/ethereum/go-ethereum/issues/23616#issuecomment-924657965
+                    let replacement_priority_fee_minimum = old_priority_fee * 110 / 100; // TODO fix possible rounding issues here
+                    let mut new_priority_fee = replacement_priority_fee_minimum; // TODO use some greater(x, y) type thing here, idk what the meta is in rust
+                    if priority_fee_estimate > new_priority_fee {
+                        new_priority_fee = priority_fee_estimate;
+                    }
+
+                    let replacement_base_fee_minimum = old_base_fee * 110 / 100;
+                    let mut new_base_fee = replacement_base_fee_minimum;
+                    if base_fee_estimate > new_base_fee {
+                        new_base_fee = base_fee_estimate;
+                    }
+
+                    replacement_tx.max_priority_fee_per_gas = Some(new_priority_fee);
+                    replacement_tx.max_fee_per_gas = Some(new_base_fee + new_priority_fee);
+                    info!("{:?}", replacement_tx);
+                    info!("old max priority fee {}", old_priority_fee);
+                    info!("new max priority fee {}", new_priority_fee);
 
                     // the tx hash will be different so we need to update it
                     let new_txhash = match self
@@ -131,13 +157,6 @@ where
                     {
                         Ok(new_tx_hash) => {
                             let new_tx_hash = *new_tx_hash;
-                            info!(
-                                old_tx_hash = ?tx_hash,
-                                new_tx_hash = ?new_tx_hash,
-                                old_gas_price = ?old_gas_price,
-                                new_gas_price = ?new_gas_price,
-                                "escalated"
-                            );
                             new_tx_hash
                         }
                         Err(err) => {
