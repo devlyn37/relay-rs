@@ -1,14 +1,19 @@
 use async_trait::async_trait;
 use ethers::{
     providers::{FromErr, Middleware, PendingTransaction, StreamExt},
-    types::{transaction::eip2718::TypedTransaction, BlockId, Eip1559TransactionRequest, TxHash},
+    types::{
+        transaction::eip2718::TypedTransaction, BlockId, Eip1559TransactionRequest, TxHash, U256,
+    },
 };
 use futures_util::lock::Mutex;
-use std::{pin::Pin, sync::Arc};
+use std::{cmp::max, pin::Pin, sync::Arc};
 use thiserror::Error;
 use tracing::info;
 
-use tokio::spawn;
+use tokio::{
+    spawn,
+    time::{sleep, Duration},
+};
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = ()> + Send + 'a>>;
 
 #[derive(Debug)]
@@ -49,16 +54,23 @@ where
         info!("Hi sending a transaction from the escalator");
         info!("{:?}", tx);
 
+        let mut tx = match tx {
+            TypedTransaction::Eip1559(inner) => inner,
+            _ => return Err(GasEscalatorError::UnsupportedTxType),
+        };
+
+        if tx.max_fee_per_gas.is_none() || tx.max_priority_fee_per_gas.is_none() {
+            let (estimate_max_fee, estimate_max_priority_fee) =
+                self.estimate_eip1559_fees(None).await?;
+            tx.max_fee_per_gas = Some(estimate_max_fee);
+            tx.max_priority_fee_per_gas = Some(estimate_max_priority_fee);
+        }
+
         let pending_tx = self
             .inner()
             .send_transaction(tx.clone(), block)
             .await
             .map_err(GasEscalatorError::MiddlewareError)?;
-
-        let tx = match tx {
-            TypedTransaction::Eip1559(inner) => inner,
-            _ => return Err(GasEscalatorError::UnsupportedTxType),
-        };
 
         // insert the tx in the pending txs
         let mut lock = self.txs.lock().await;
@@ -107,6 +119,8 @@ where
         while watcher.next().await.is_some() {
             let mut txs = self.txs.lock().await;
             let len = txs.len();
+            let (estimate_max_fee, estimate_max_priority_fee) =
+                self.estimate_eip1559_fees(None).await.unwrap();
 
             for _ in 0..len {
                 // this must never panic as we're explicitly within bounds
@@ -114,40 +128,33 @@ where
                     txs.pop().expect("should have element in vector");
 
                 let receipt = self.get_transaction_receipt(tx_hash).await?;
+                sleep(Duration::from_secs(1)).await; // to avoid rate limiting
+
                 info!(tx_hash = ?tx_hash, "checking if exists");
 
                 if receipt.is_none() {
                     info!("Transaction wasn't mined in the latest block, we're going to send a replacement out");
-                    let old_priority_fee = replacement_tx
+
+                    // gas values here will always exist because we set them in `send_transaction`
+                    let prev_max_priority_fee = replacement_tx
                         .max_priority_fee_per_gas
-                        .expect("max priority fee per gas needs to be set");
-                    let old_max_fee_per_gas = replacement_tx
+                        .expect("max priority fee per gas must be set");
+                    let prev_max_fee = replacement_tx
                         .max_fee_per_gas
-                        .expect("max fee per gas needs to be set");
-                    let old_base_fee = old_max_fee_per_gas - old_priority_fee;
+                        .expect("max fee per gas must be set");
 
-                    let (max_fee_estimate, priority_fee_estimate) =
-                        self.estimate_eip1559_fees(None).await.unwrap();
-                    let base_fee_estimate = max_fee_estimate - priority_fee_estimate;
+                    let (new_max_fee, new_max_priority_fee) = replacement_gas_values(
+                        prev_max_fee,
+                        prev_max_priority_fee,
+                        estimate_max_fee,
+                        estimate_max_priority_fee,
+                    );
 
-                    // Rule: both the tip and the max fee must be bumped by a minimum of 10% https://github.com/ethereum/go-ethereum/issues/23616#issuecomment-924657965
-                    let replacement_priority_fee_minimum = old_priority_fee * 110 / 100; // TODO fix possible rounding issues here
-                    let mut new_priority_fee = replacement_priority_fee_minimum; // TODO use some greater(x, y) type thing here, idk what the meta is in rust
-                    if priority_fee_estimate > new_priority_fee {
-                        new_priority_fee = priority_fee_estimate;
-                    }
-
-                    let replacement_base_fee_minimum = old_base_fee * 110 / 100;
-                    let mut new_base_fee = replacement_base_fee_minimum;
-                    if base_fee_estimate > new_base_fee {
-                        new_base_fee = base_fee_estimate;
-                    }
-
-                    replacement_tx.max_priority_fee_per_gas = Some(new_priority_fee);
-                    replacement_tx.max_fee_per_gas = Some(new_base_fee + new_priority_fee);
+                    replacement_tx.max_priority_fee_per_gas = Some(new_max_priority_fee);
+                    replacement_tx.max_fee_per_gas = Some(new_max_fee);
                     info!("{:?}", replacement_tx);
-                    info!("old max priority fee {}", old_priority_fee);
-                    info!("new max priority fee {}", new_priority_fee);
+                    info!("old max priority fee {}", prev_max_priority_fee);
+                    info!("new max priority fee {}", new_max_priority_fee);
 
                     // the tx hash will be different so we need to update it
                     let new_txhash = match self
@@ -180,6 +187,32 @@ where
 
         Ok(())
     }
+}
+
+fn replacement_gas_values(
+    prev_max_fee: U256,
+    prev_max_priority_fee: U256,
+    estimate_max_fee: U256,
+    estimate_max_priority_fee: U256,
+) -> (U256, U256) {
+    let new_max_priority_fee = max(
+        estimate_max_priority_fee,
+        increase_by_minimum(prev_max_priority_fee),
+    );
+
+    let estimate_base_fee = estimate_max_fee - estimate_max_priority_fee;
+    let prev_base_fee = prev_max_fee - prev_max_priority_fee;
+    let new_base_fee = max(estimate_base_fee, increase_by_minimum(prev_base_fee));
+
+    return (new_base_fee + new_max_priority_fee, new_max_priority_fee);
+}
+
+// Rule: both the tip and the max fee must
+// be bumped by a minimum of 10%
+// https://github.com/ethereum/go-ethereum/issues/23616#issuecomment-924657965
+fn increase_by_minimum(value: U256) -> U256 {
+    let increase = (value * 10) / 100u64;
+    value + increase + 1 // add 1 here for rounding purposes
 }
 
 // Boilerplate
