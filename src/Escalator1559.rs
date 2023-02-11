@@ -18,26 +18,28 @@ use tokio::{
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = H256> + Send + 'a>>;
 
 #[derive(Debug)]
-pub struct Escalator1559Middleware<M> {
+pub struct EIP1559BlockEscalator<M> {
     pub inner: Arc<M>,
     pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Option<BlockId>)>>>,
+    pub block_frequency: u8,
 }
 
-impl<M> Clone for Escalator1559Middleware<M> {
+impl<M> Clone for EIP1559BlockEscalator<M> {
     fn clone(&self) -> Self {
-        Escalator1559Middleware {
+        EIP1559BlockEscalator {
             inner: self.inner.clone(),
             txs: self.txs.clone(),
+            block_frequency: self.block_frequency.clone(),
         }
     }
 }
 
 #[async_trait]
-impl<M> Middleware for Escalator1559Middleware<M>
+impl<M> Middleware for EIP1559BlockEscalator<M>
 where
     M: Middleware,
 {
-    type Error = GasEscalatorError<M>;
+    type Error = EIP1559BlockEscalatorError<M>;
     type Provider = M::Provider;
     type Inner = M;
 
@@ -54,7 +56,7 @@ where
 
         let mut tx = match tx {
             TypedTransaction::Eip1559(inner) => inner,
-            _ => return Err(GasEscalatorError::UnsupportedTxType),
+            _ => return Err(EIP1559BlockEscalatorError::UnsupportedTxType),
         };
 
         if tx.max_fee_per_gas.is_none() || tx.max_priority_fee_per_gas.is_none() {
@@ -68,7 +70,7 @@ where
             .inner()
             .send_transaction(tx.clone(), block)
             .await
-            .map_err(GasEscalatorError::MiddlewareError)?;
+            .map_err(EIP1559BlockEscalatorError::MiddlewareError)?;
 
         // insert the tx in the pending txs
         let mut lock = self.txs.lock().await;
@@ -78,19 +80,20 @@ where
     }
 }
 
-impl<M> Escalator1559Middleware<M>
+impl<M> EIP1559BlockEscalator<M>
 where
     M: Middleware,
 {
     /// Initializes the middleware with the provided gas escalator and the chosen
     /// escalation frequency (per block or per second)
-    pub fn new(inner: M) -> Self
+    pub fn new(inner: M, block_frequency: u8) -> Self
     where
         M: Clone + 'static,
     {
         let this = Self {
             inner: Arc::new(inner),
             txs: Arc::new(Mutex::new(Vec::new())),
+            block_frequency,
         };
 
         {
@@ -104,31 +107,40 @@ where
     }
 
     /// Re-broadcasts pending transactions with a gas price escalator
-    pub async fn escalate(&self) -> Result<(), GasEscalatorError<M>> {
+    pub async fn escalate(&self) -> Result<(), EIP1559BlockEscalatorError<M>> {
         info!("Monitoring for escalation!");
         let mut watcher: WatcherFuture = Box::pin(
             self.inner
                 .watch_blocks()
                 .await
-                .map_err(GasEscalatorError::MiddlewareError)?
+                .map_err(EIP1559BlockEscalatorError::MiddlewareError)?
                 .map(|hash| (hash)),
         );
+        let mut block_count = 0;
 
         while let Some(block_hash) = watcher.next().await {
-            let mut txs = self.txs.lock().await;
-
             // We know the block exists at this point
             info!("Block {:?} has been mined", block_hash);
+            block_count = block_count + 1;
+
+            if block_count % self.block_frequency != 0 {
+                info!("Not checking on transaction this block");
+                continue;
+            }
+
             let block = self
                 .get_block_with_txs(block_hash)
                 .await?
                 .expect("Block must exist");
             sleep(Duration::from_secs(1)).await; // to avoid rate limiting
 
+            let mut txs = self.txs.lock().await;
+
             let (estimate_max_fee, estimate_max_priority_fee) =
                 self.estimate_eip1559_fees(None).await.unwrap();
 
             let len = txs.len();
+            info!("checking transactions");
             for _ in 0..len {
                 // this must never panic as we're explicitly within bounds
                 let (tx_hash, mut replacement_tx, priority) =
@@ -185,10 +197,13 @@ where
                             // gas price tx when one of the previous ones
                             // was already mined (meaning we also do not
                             // push it back to the pending txs vector)
-                            info!("transaction ${:?} was included", tx_hash);
+                            info!(
+                                "transaction ${:?} was included, replacement not needed",
+                                tx_hash
+                            );
                             continue;
                         } else {
-                            return Err(GasEscalatorError::MiddlewareError(err));
+                            return Err(EIP1559BlockEscalatorError::MiddlewareError(err));
                         }
                     }
                 };
@@ -231,15 +246,15 @@ fn increase_by_minimum(value: U256) -> U256 {
 }
 
 // Boilerplate
-impl<M: Middleware> FromErr<M::Error> for GasEscalatorError<M> {
-    fn from(src: M::Error) -> GasEscalatorError<M> {
-        GasEscalatorError::MiddlewareError(src)
+impl<M: Middleware> FromErr<M::Error> for EIP1559BlockEscalatorError<M> {
+    fn from(src: M::Error) -> EIP1559BlockEscalatorError<M> {
+        EIP1559BlockEscalatorError::MiddlewareError(src)
     }
 }
 
 #[derive(Error, Debug)]
 /// Error thrown when the GasEscalator interacts with the blockchain
-pub enum GasEscalatorError<M: Middleware> {
+pub enum EIP1559BlockEscalatorError<M: Middleware> {
     #[error("{0}")]
     /// Thrown when an internal middleware errors
     MiddlewareError(M::Error),

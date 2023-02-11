@@ -17,7 +17,7 @@ use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{error, info, Level};
 mod escalator1559;
 
-type Base = escalator1559::Escalator1559Middleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
+type Base = escalator1559::EIP1559BlockEscalator<SignerMiddleware<Provider<Http>, LocalWallet>>;
 type ConfigedProvider = NonceManagerMiddleware<Base>;
 type ConfigedProviderError = NonceManagerError<Base>;
 
@@ -53,7 +53,7 @@ async fn main() {
     let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
         .await
         .expect("Could not connect to provider");
-    let provider = escalator1559::Escalator1559Middleware::new(provider);
+    let provider = escalator1559::EIP1559BlockEscalator::new(provider, 2);
     let provider: ConfigedProvider = NonceManagerMiddleware::new(provider, address);
 
     let shared_state = Arc::new(AppState { provider });
