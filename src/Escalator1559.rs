@@ -2,19 +2,20 @@ use async_trait::async_trait;
 use ethers::{
     providers::{FromErr, Middleware, PendingTransaction, StreamExt},
     types::{
-        transaction::eip2718::TypedTransaction, BlockId, Eip1559TransactionRequest, TxHash, U256,
+        transaction::eip2718::TypedTransaction, BlockId, Eip1559TransactionRequest, TxHash, H256,
+        U256,
     },
 };
 use futures_util::lock::Mutex;
 use std::{cmp::max, pin::Pin, sync::Arc};
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, trace};
 
 use tokio::{
     spawn,
     time::{sleep, Duration},
 };
-type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = ()> + Send + 'a>>;
+type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = H256> + Send + 'a>>;
 
 #[derive(Debug)]
 pub struct Escalator1559Middleware<M> {
@@ -50,9 +51,6 @@ where
         block: Option<BlockId>,
     ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
         let tx = tx.into();
-
-        info!("Hi sending a transaction from the escalator");
-        info!("{:?}", tx);
 
         let mut tx = match tx {
             TypedTransaction::Eip1559(inner) => inner,
@@ -113,75 +111,92 @@ where
                 .watch_blocks()
                 .await
                 .map_err(GasEscalatorError::MiddlewareError)?
-                .map(|_| ()),
+                .map(|hash| (hash)),
         );
 
-        while watcher.next().await.is_some() {
+        while let Some(block_hash) = watcher.next().await {
             let mut txs = self.txs.lock().await;
-            let len = txs.len();
+
+            // We know the block exists at this point
+            info!("Block {:?} has been mined", block_hash);
+            let block = self
+                .get_block_with_txs(block_hash)
+                .await?
+                .expect("Block must exist");
+            sleep(Duration::from_secs(1)).await; // to avoid rate limiting
+
             let (estimate_max_fee, estimate_max_priority_fee) =
                 self.estimate_eip1559_fees(None).await.unwrap();
 
+            let len = txs.len();
             for _ in 0..len {
                 // this must never panic as we're explicitly within bounds
                 let (tx_hash, mut replacement_tx, priority) =
                     txs.pop().expect("should have element in vector");
 
-                let receipt = self.get_transaction_receipt(tx_hash).await?;
-                sleep(Duration::from_secs(1)).await; // to avoid rate limiting
+                let receipt = block.transactions.iter().find(|tx| tx.hash == tx_hash);
+                info!("checking if transaction {:?} was included", tx_hash);
 
-                info!(tx_hash = ?tx_hash, "checking if exists");
-
-                if receipt.is_none() {
-                    info!("Transaction wasn't mined in the latest block, we're going to send a replacement out");
-
-                    // gas values here will always exist because we set them in `send_transaction`
-                    let prev_max_priority_fee = replacement_tx
-                        .max_priority_fee_per_gas
-                        .expect("max priority fee per gas must be set");
-                    let prev_max_fee = replacement_tx
-                        .max_fee_per_gas
-                        .expect("max fee per gas must be set");
-
-                    let (new_max_fee, new_max_priority_fee) = replacement_gas_values(
-                        prev_max_fee,
-                        prev_max_priority_fee,
-                        estimate_max_fee,
-                        estimate_max_priority_fee,
-                    );
-
-                    replacement_tx.max_priority_fee_per_gas = Some(new_max_priority_fee);
-                    replacement_tx.max_fee_per_gas = Some(new_max_fee);
-                    info!("{:?}", replacement_tx);
-                    info!("old max priority fee {}", prev_max_priority_fee);
-                    info!("new max priority fee {}", new_max_priority_fee);
-
-                    // the tx hash will be different so we need to update it
-                    let new_txhash = match self
-                        .inner()
-                        .send_transaction(replacement_tx.clone(), priority)
-                        .await
-                    {
-                        Ok(new_tx_hash) => {
-                            let new_tx_hash = *new_tx_hash;
-                            new_tx_hash
-                        }
-                        Err(err) => {
-                            if err.to_string().contains("nonce too low") {
-                                // ignore "nonce too low" errors because they
-                                // may happen if we try to broadcast a higher
-                                // gas price tx when one of the previous ones
-                                // was already mined (meaning we also do not
-                                // push it back to the pending txs vector)
-                                continue;
-                            } else {
-                                return Err(GasEscalatorError::MiddlewareError(err));
-                            }
-                        }
-                    };
-
-                    txs.push((new_txhash, replacement_tx, priority));
+                if receipt.is_some() {
+                    info!("transaction {:?} was included", tx_hash);
+                    continue;
                 }
+
+                // gas values here will always exist because we set them in `send_transaction`
+                info!(
+                    "transaction {:?} was not included, sending replacement",
+                    tx_hash
+                );
+                let prev_max_priority_fee = replacement_tx
+                    .max_priority_fee_per_gas
+                    .expect("max priority fee per gas must be set");
+                let prev_max_fee = replacement_tx
+                    .max_fee_per_gas
+                    .expect("max fee per gas must be set");
+
+                let (new_max_fee, new_max_priority_fee) = replacement_gas_values(
+                    prev_max_fee,
+                    prev_max_priority_fee,
+                    estimate_max_fee,
+                    estimate_max_priority_fee,
+                );
+
+                replacement_tx.max_priority_fee_per_gas = Some(new_max_priority_fee);
+                replacement_tx.max_fee_per_gas = Some(new_max_fee);
+                trace!("replacement transaction {:?}", replacement_tx);
+                info!(
+                    "old: max priority fee {prev_max_priority_fee}, max fee: {prev_max_fee}\nnew: max priority fee {new_max_priority_fee}, max fee {new_max_fee}"
+                );
+
+                // the tx hash will be different so we need to update it
+                let new_txhash = match self
+                    .inner()
+                    .send_transaction(replacement_tx.clone(), priority)
+                    .await
+                {
+                    Ok(new_tx_hash) => {
+                        let new_tx_hash = *new_tx_hash;
+                        new_tx_hash
+                    }
+                    Err(err) => {
+                        if err.to_string().contains("nonce too low") {
+                            // ignore "nonce too low" errors because they
+                            // may happen if we try to broadcast a higher
+                            // gas price tx when one of the previous ones
+                            // was already mined (meaning we also do not
+                            // push it back to the pending txs vector)
+                            info!("transaction ${:?} was included", tx_hash);
+                            continue;
+                        } else {
+                            return Err(GasEscalatorError::MiddlewareError(err));
+                        }
+                    }
+                };
+
+                info!("Transaction {:?} replaced with {:?}", tx_hash, new_txhash);
+                sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
+
+                txs.push((new_txhash, replacement_tx, priority));
             }
         }
 
