@@ -3,7 +3,10 @@ use ethers::{
     prelude::{NonceManagerMiddleware, SignerMiddleware},
     providers::{Http, Middleware, Provider, StreamExt},
     signers::LocalWallet,
-    types::{BlockId, Eip1559TransactionRequest, TxHash, H256, U256},
+    types::{
+        transaction::eip2718::TypedTransaction, BlockId, Eip1559TransactionRequest, TxHash, H256,
+        U256,
+    },
 };
 use futures_util::lock::Mutex;
 use std::{cmp::max, pin::Pin, sync::Arc};
@@ -72,10 +75,17 @@ impl TransactionMonitor {
             with_gas.max_fee_per_gas = Some(estimate_max_fee);
             with_gas.max_priority_fee_per_gas = Some(estimate_max_priority_fee);
         }
+        let mut filled: TypedTransaction = with_gas.clone().into();
+        self.provider
+            .fill_transaction(&mut filled, None)
+            .await
+            .with_context(|| "error while filling transaction")?;
+
+        info!("Filled Transaction {:?}", filled);
 
         let pending_tx = self
             .provider
-            .send_transaction(with_gas.clone(), block)
+            .send_transaction(filled.clone(), block)
             .await
             .with_context(|| "error sending transaction")?;
 
@@ -83,7 +93,7 @@ impl TransactionMonitor {
 
         // insert the tx in the pending txs
         let mut lock = self.txs.lock().await;
-        lock.push((*pending_tx, with_gas, block, id));
+        lock.push((*pending_tx, filled.clone().into(), block, id));
 
         Ok(id)
     }
