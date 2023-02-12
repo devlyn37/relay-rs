@@ -8,16 +8,14 @@ use ethers::{
     middleware::{nonce_manager::NonceManagerMiddleware, signer::SignerMiddleware},
     providers::{Http, Provider},
     signers::{LocalWallet, Signer},
-    utils::__serde_json::json,
 };
 use serde::Deserialize;
 use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
-use tracing::{error, info, Level};
+use tracing::{info, Level};
 mod escalator1559;
 
 type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
-type ConfigedMonitor = escalator1559::TransactionMonitor<ConfigedProvider>;
-type ConfigedMonitorError = escalator1559::TransactionMonitorError<ConfigedProvider>;
+type ConfigedMonitor = escalator1559::TransactionMonitor;
 
 #[derive(Debug)]
 struct AppState {
@@ -103,21 +101,23 @@ impl fmt::Debug for RelayRequest {
     }
 }
 
-#[derive(Debug)]
-enum AppError {
-    ProviderError(ConfigedMonitorError),
-}
-
+struct AppError(anyhow::Error);
+// Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        error!("{:?}", self);
-        let body = Json(json!({"error": "connection issues, try again later!"}));
-        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Something went wrong: {}", self.0),
+        )
+            .into_response()
     }
 }
 
-impl From<ConfigedMonitorError> for AppError {
-    fn from(inner: ConfigedMonitorError) -> Self {
-        AppError::ProviderError(inner)
+impl<E> From<E> for AppError
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(err: E) -> Self {
+        Self(err.into())
     }
 }

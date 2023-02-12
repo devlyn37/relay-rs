@@ -1,10 +1,12 @@
+use anyhow::Context;
 use ethers::{
-    providers::{Middleware, StreamExt},
+    prelude::{NonceManagerMiddleware, SignerMiddleware},
+    providers::{Http, Middleware, Provider, StreamExt},
+    signers::LocalWallet,
     types::{BlockId, Eip1559TransactionRequest, TxHash, H256, U256},
 };
 use futures_util::lock::Mutex;
 use std::{cmp::max, pin::Pin, sync::Arc};
-use thiserror::Error;
 use tracing::{info, trace};
 use uuid::Uuid;
 
@@ -15,13 +17,13 @@ use tokio::{
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = H256> + Send + 'a>>;
 
 #[derive(Debug)]
-pub struct TransactionMonitor<M> {
-    pub provider: Arc<M>,
+pub struct TransactionMonitor {
+    pub provider: Arc<NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>>,
     pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Option<BlockId>, Uuid)>>>,
     pub block_frequency: u8,
 }
 
-impl<M> Clone for TransactionMonitor<M> {
+impl Clone for TransactionMonitor {
     fn clone(&self) -> Self {
         TransactionMonitor {
             provider: self.provider.clone(),
@@ -31,13 +33,13 @@ impl<M> Clone for TransactionMonitor<M> {
     }
 }
 
-impl<M> TransactionMonitor<M>
-where
-    M: Middleware,
-{
-    pub fn new(inner: M, block_frequency: u8) -> Self
+impl TransactionMonitor {
+    pub fn new(
+        inner: NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>,
+        block_frequency: u8,
+    ) -> Self
     where
-        M: 'static,
+        NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>: 'static,
     {
         let this = Self {
             provider: Arc::new(inner),
@@ -59,14 +61,14 @@ where
         &self,
         tx: Eip1559TransactionRequest,
         block: Option<BlockId>,
-    ) -> Result<Uuid, TransactionMonitorError<M>> {
+    ) -> Result<Uuid, anyhow::Error> {
         let mut with_gas = tx.clone();
         if with_gas.max_fee_per_gas.is_none() || with_gas.max_priority_fee_per_gas.is_none() {
             let (estimate_max_fee, estimate_max_priority_fee) = self
                 .provider
                 .estimate_eip1559_fees(None)
                 .await
-                .map_err(TransactionMonitorError::MiddlewareError)?;
+                .with_context(|| "error estimating gas")?;
             with_gas.max_fee_per_gas = Some(estimate_max_fee);
             with_gas.max_priority_fee_per_gas = Some(estimate_max_priority_fee);
         }
@@ -75,7 +77,7 @@ where
             .provider
             .send_transaction(with_gas.clone(), block)
             .await
-            .map_err(TransactionMonitorError::MiddlewareError)?;
+            .with_context(|| "error sending transaction")?;
 
         let id = Uuid::new_v4();
 
@@ -86,13 +88,13 @@ where
         Ok(id)
     }
 
-    pub async fn monitor(&self) -> Result<(), TransactionMonitorError<M>> {
+    pub async fn monitor(&self) -> Result<(), anyhow::Error> {
         info!("Monitoring for escalation!");
         let mut watcher: WatcherFuture = Box::pin(
             self.provider
                 .watch_blocks()
                 .await
-                .map_err(TransactionMonitorError::MiddlewareError)?
+                .with_context(|| "Block streaming failure")?
                 .map(|hash| (hash)),
         );
         let mut block_count = 0;
@@ -111,7 +113,7 @@ where
                 .provider
                 .get_block_with_txs(block_hash)
                 .await
-                .map_err(TransactionMonitorError::MiddlewareError)?
+                .with_context(|| "error while fetching block")?
                 .unwrap();
             sleep(Duration::from_secs(1)).await; // to avoid rate limiting
 
@@ -120,7 +122,7 @@ where
                 .provider
                 .estimate_eip1559_fees(None)
                 .await
-                .map_err(TransactionMonitorError::MiddlewareError)?;
+                .with_context(|| "error estimating gas prices")?;
 
             let len = txs.len();
             info!("checking transactions");
@@ -186,7 +188,7 @@ where
                             );
                             continue;
                         } else {
-                            return Err(TransactionMonitorError::MiddlewareError(err));
+                            return Err(anyhow::anyhow!(err));
                         }
                     }
                 };
@@ -226,12 +228,4 @@ fn replacement_gas_values(
 fn increase_by_minimum(value: U256) -> U256 {
     let increase = (value * 10) / 100u64;
     value + increase + 1 // add 1 here for rounding purposes
-}
-
-#[derive(Error, Debug)]
-/// Error thrown when the GasEscalator interacts with the blockchain
-pub enum TransactionMonitorError<M: Middleware> {
-    #[error("{0}")]
-    /// Thrown when an internal middleware errors
-    MiddlewareError(M::Error),
 }
