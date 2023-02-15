@@ -12,10 +12,11 @@ use ethers::{
 use serde::Deserialize;
 use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
-mod escalator1559;
+mod transaction_monitor;
+pub use transaction_monitor::TransactionMonitor;
 
 type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
-type ConfigedMonitor = escalator1559::TransactionMonitor<ConfigedProvider>;
+type ConfigedMonitor = TransactionMonitor<ConfigedProvider>;
 
 #[derive(Debug)]
 struct AppState {
@@ -50,7 +51,7 @@ async fn main() {
         .await
         .expect("Could not connect to provider");
     let provider = NonceManagerMiddleware::new(provider, address);
-    let monitor: ConfigedMonitor = escalator1559::TransactionMonitor::new(provider, 2);
+    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 2);
 
     let shared_state = Arc::new(AppState { monitor });
 
