@@ -15,7 +15,7 @@ use tracing::{info, Level};
 mod escalator1559;
 
 type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
-type ConfigedMonitor = escalator1559::TransactionMonitor;
+type ConfigedMonitor = escalator1559::TransactionMonitor<ConfigedProvider>;
 
 #[derive(Debug)]
 struct AppState {

@@ -1,8 +1,6 @@
 use anyhow::Context;
 use ethers::{
-    prelude::{NonceManagerMiddleware, SignerMiddleware},
-    providers::{Http, Middleware, Provider, StreamExt},
-    signers::LocalWallet,
+    providers::{Middleware, StreamExt},
     types::{
         transaction::eip2718::TypedTransaction, BlockId, Eip1559TransactionRequest, TxHash, H256,
         U256,
@@ -20,13 +18,13 @@ use tokio::{
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = H256> + Send + 'a>>;
 
 #[derive(Debug)]
-pub struct TransactionMonitor {
-    pub provider: Arc<NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>>,
+pub struct TransactionMonitor<M> {
+    pub provider: Arc<M>,
     pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Option<BlockId>, Uuid)>>>,
     pub block_frequency: u8,
 }
 
-impl Clone for TransactionMonitor {
+impl<M> Clone for TransactionMonitor<M> {
     fn clone(&self) -> Self {
         TransactionMonitor {
             provider: self.provider.clone(),
@@ -36,16 +34,16 @@ impl Clone for TransactionMonitor {
     }
 }
 
-impl TransactionMonitor {
-    pub fn new(
-        inner: NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>,
-        block_frequency: u8,
-    ) -> Self
+impl<M> TransactionMonitor<M>
+where
+    M: Middleware,
+{
+    pub fn new(provider: M, block_frequency: u8) -> Self
     where
-        NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>: 'static,
+        M: 'static, // Read about lifetimes, see if all these are necessary
     {
         let this = Self {
-            provider: Arc::new(inner),
+            provider: Arc::new(provider),
             txs: Arc::new(Mutex::new(Vec::new())),
             block_frequency,
         };
@@ -64,7 +62,10 @@ impl TransactionMonitor {
         &self,
         tx: Eip1559TransactionRequest,
         block: Option<BlockId>,
-    ) -> Result<Uuid, anyhow::Error> {
+    ) -> Result<Uuid, anyhow::Error>
+    where
+        M: 'static,
+    {
         let mut with_gas = tx.clone();
         if with_gas.max_fee_per_gas.is_none() || with_gas.max_priority_fee_per_gas.is_none() {
             let (estimate_max_fee, estimate_max_priority_fee) = self
@@ -98,7 +99,10 @@ impl TransactionMonitor {
         Ok(id)
     }
 
-    pub async fn monitor(&self) -> Result<(), anyhow::Error> {
+    pub async fn monitor(&self) -> Result<(), anyhow::Error>
+    where
+        M: 'static,
+    {
         info!("Monitoring for escalation!");
         let mut watcher: WatcherFuture = Box::pin(
             self.provider
