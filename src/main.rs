@@ -56,7 +56,7 @@ async fn main() {
         .await
         .expect("Could not connect to provider");
     let provider = NonceManagerMiddleware::new(provider, address);
-    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 2);
+    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3);
 
     let shared_state = Arc::new(AppState { monitor });
 
@@ -81,7 +81,9 @@ async fn relay_transaction(
     let request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
-        .data(payload.data);
+        .data(payload.data)
+        .max_priority_fee_per_gas(1);
+
     info!("Transaction: {:?}", request);
     let id = state
         .monitor

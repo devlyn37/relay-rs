@@ -125,11 +125,6 @@ where
             info!("Block {:?} has been mined", block_hash);
             block_count = block_count + 1;
 
-            if block_count % self.block_frequency != 0 {
-                info!("Not checking on transaction this block");
-                continue;
-            }
-
             let block = self
                 .provider
                 .get_block_with_txs(block_hash)
@@ -138,25 +133,38 @@ where
                 .unwrap();
             sleep(Duration::from_secs(1)).await; // to avoid rate limiting
 
-            let mut txs = self.txs.lock().await;
             let (estimate_max_fee, estimate_max_priority_fee) = self
                 .provider
                 .estimate_eip1559_fees(None)
                 .await
                 .with_context(|| "error estimating gas prices")?;
 
+            let mut txs = self.txs.lock().await;
             let len = txs.len();
-            info!("checking transactions");
+
             for _ in 0..len {
                 // this must never panic as we're explicitly within bounds
                 let (tx_hash, mut replacement_tx, priority, id) =
                     txs.pop().expect("should have element in vector");
 
-                let receipt = block.transactions.iter().find(|tx| tx.hash == tx_hash);
+                let tx_has_been_included = block
+                    .transactions
+                    .iter()
+                    .find(|tx| tx.hash == tx_hash)
+                    .is_some();
                 info!("checking if transaction {:?} was included", tx_hash);
 
-                if receipt.is_some() {
+                if tx_has_been_included {
                     info!("transaction {:?} was included", tx_hash);
+                    continue;
+                }
+
+                if block_count % self.block_frequency != 0 {
+                    info!(
+                        "transaction {:?} was not included, not sending replacement yet",
+                        tx_hash
+                    );
+                    txs.push((tx_hash, replacement_tx, priority, id));
                     continue;
                 }
 
