@@ -18,9 +18,15 @@ use tokio::{
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = H256> + Send + 'a>>;
 
 #[derive(Debug)]
+pub enum Status {
+    Pending,
+    Complete,
+}
+
+#[derive(Debug)]
 pub struct TransactionMonitor<M> {
     pub provider: Arc<M>,
-    pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Option<BlockId>, Uuid)>>>,
+    pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Option<BlockId>, Uuid)>>>, // Is the mutex really necessary here, we're only gonna have two tasks sharing this
     pub block_frequency: u8,
 }
 
@@ -36,12 +42,9 @@ impl<M> Clone for TransactionMonitor<M> {
 
 impl<M> TransactionMonitor<M>
 where
-    M: Middleware,
+    M: Middleware + 'static,
 {
-    pub fn new(provider: M, block_frequency: u8) -> Self
-    where
-        M: 'static, // Read about lifetimes, see if all these are necessary
-    {
+    pub fn new(provider: M, block_frequency: u8) -> Self {
         let this = Self {
             provider: Arc::new(provider),
             txs: Arc::new(Mutex::new(Vec::new())),
@@ -62,10 +65,7 @@ where
         &self,
         tx: Eip1559TransactionRequest,
         block: Option<BlockId>,
-    ) -> Result<Uuid, anyhow::Error>
-    where
-        M: 'static,
-    {
+    ) -> Result<Uuid, anyhow::Error> {
         let mut with_gas = tx.clone();
         if with_gas.max_fee_per_gas.is_none() || with_gas.max_priority_fee_per_gas.is_none() {
             let (estimate_max_fee, estimate_max_priority_fee) = self
@@ -99,10 +99,17 @@ where
         Ok(id)
     }
 
-    pub async fn monitor(&self) -> Result<(), anyhow::Error>
-    where
-        M: 'static,
-    {
+    // TODO improve this XD
+    pub async fn get_transaction_status(&self, id: Uuid) -> Status {
+        let lock = self.txs.lock().await;
+        info!("here's the current txs {:?}", lock);
+        match lock.iter().find(|(_, _, _, entry_id)| id == *entry_id) {
+            None => Status::Complete,
+            Some(_) => Status::Pending,
+        }
+    }
+
+    pub async fn monitor(&self) -> Result<(), anyhow::Error> {
         info!("Monitoring for escalation!");
         let mut watcher: WatcherFuture = Box::pin(
             self.provider
@@ -174,7 +181,7 @@ where
 
                 replacement_tx.max_priority_fee_per_gas = Some(new_max_priority_fee);
                 replacement_tx.max_fee_per_gas = Some(new_max_fee);
-                trace!("replacement transaction {:?}", replacement_tx);
+                info!("replacement transaction {:?}", replacement_tx);
                 info!(
                     "old: max priority fee {prev_max_priority_fee}, max fee: {prev_max_fee}\nnew: max priority fee {new_max_priority_fee}, max fee {new_max_fee}"
                 );

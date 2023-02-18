@@ -1,5 +1,9 @@
 use axum::{
-    extract::State, http::StatusCode, response::IntoResponse, response::Response, routing::post,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    response::Response,
+    routing::{get, post},
     Json, Router,
 };
 use dotenv::dotenv;
@@ -12,6 +16,7 @@ use ethers::{
 use serde::Deserialize;
 use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
+use uuid::Uuid;
 mod transaction_monitor;
 pub use transaction_monitor::TransactionMonitor;
 
@@ -57,6 +62,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/transaction", post(relay_transaction))
+        .route("/transaction/:id", get(transaction_status))
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -71,7 +77,7 @@ async fn main() {
 async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RelayRequest>,
-) -> Result<Json<String>, AppError> {
+) -> Result<String, AppError> {
     let request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
@@ -82,7 +88,12 @@ async fn relay_transaction(
         .send_monitored_transaction(request, None)
         .await?;
 
-    Ok(Json(id.to_string()))
+    Ok(id.to_string())
+}
+
+async fn transaction_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> String {
+    let status = state.monitor.get_transaction_status(id).await;
+    format!("{:?}", status)
 }
 
 #[derive(Deserialize)]
