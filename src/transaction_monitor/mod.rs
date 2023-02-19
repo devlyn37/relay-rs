@@ -168,93 +168,88 @@ where
                     continue;
                 }
 
-                // gas values here will always exist because we set them in `send_transaction`
-                info!(
-                    "transaction {:?} was not included, sending replacement",
-                    tx_hash
-                );
-                let prev_max_priority_fee = replacement_tx
-                    .max_priority_fee_per_gas
-                    .expect("max priority fee per gas must be set");
-                let prev_max_fee = replacement_tx
-                    .max_fee_per_gas
-                    .expect("max fee per gas must be set");
-
-                let (new_max_fee, new_max_priority_fee) = replacement_gas_values(
-                    prev_max_fee,
-                    prev_max_priority_fee,
-                    estimate_max_fee,
-                    estimate_max_priority_fee,
-                );
-
-                replacement_tx.max_priority_fee_per_gas = Some(new_max_priority_fee);
-                replacement_tx.max_fee_per_gas = Some(new_max_fee);
-                info!("replacement transaction {:?}", replacement_tx);
-                info!(
-                    "old: max priority fee {prev_max_priority_fee}, max fee: {prev_max_fee}\nnew: max priority fee {new_max_priority_fee}, max fee {new_max_fee}"
-                );
-
-                // the tx hash will be different so we need to update it
-                let new_txhash = match self
-                    .provider
-                    .send_transaction(replacement_tx.clone(), priority)
-                    .await
+                match self
+                    .rebroadcast(
+                        &mut replacement_tx,
+                        estimate_max_fee,
+                        estimate_max_priority_fee,
+                        priority,
+                    )
+                    .await?
                 {
-                    Ok(new_tx_hash) => {
-                        let new_tx_hash = *new_tx_hash;
-                        new_tx_hash
+                    Some(new_txhash) => {
+                        info!("Transaction {:?} replaced with {:?}", tx_hash, new_txhash);
+                        txs.push((new_txhash, replacement_tx, priority, id));
+                        sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
                     }
-                    Err(err) => {
-                        if err.to_string().contains("nonce too low") {
-                            // ignore "nonce too low" errors because they
-                            // may happen if we try to broadcast a higher
-                            // gas price tx when one of the previous ones
-                            // was already mined (meaning we also do not
-                            // push it back to the pending txs vector)
-                            info!(
-                                "transaction ${:?} was included, replacement not needed",
-                                tx_hash
-                            );
-                            continue;
-                        } else {
-                            return Err(anyhow::anyhow!(err));
-                        }
-                    }
-                };
-
-                info!("Transaction {:?} replaced with {:?}", tx_hash, new_txhash);
-                sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
-
-                txs.push((new_txhash, replacement_tx, priority, id));
+                    None => {}
+                }
             }
         }
 
         Ok(())
     }
-}
 
-fn replacement_gas_values(
-    prev_max_fee: U256,
-    prev_max_priority_fee: U256,
-    estimate_max_fee: U256,
-    estimate_max_priority_fee: U256,
-) -> (U256, U256) {
-    let new_max_priority_fee = max(
-        estimate_max_priority_fee,
-        increase_by_minimum(prev_max_priority_fee),
-    );
+    async fn rebroadcast(
+        &self,
+        tx: &mut Eip1559TransactionRequest,
+        estimate_max_fee: U256,
+        estimate_max_priority_fee: U256,
+        priority: Option<BlockId>,
+    ) -> Result<Option<H256>, anyhow::Error> {
+        self.bump_transaction(tx, estimate_max_fee, estimate_max_priority_fee);
 
-    let estimate_base_fee = estimate_max_fee - estimate_max_priority_fee;
-    let prev_base_fee = prev_max_fee - prev_max_priority_fee;
-    let new_base_fee = max(estimate_base_fee, increase_by_minimum(prev_base_fee));
+        match self.provider.send_transaction(tx.clone(), priority).await {
+            Ok(new_tx_hash) => {
+                return Ok(Some(*new_tx_hash));
+            }
+            Err(err) => {
+                // ignore "nonce too low" errors because they
+                // may happen if we try to broadcast a higher
+                // gas price tx when one of the previous ones
+                // was already mined (meaning we also do not
+                // push it back to the pending txs vector)
+                if err.to_string().contains("nonce too low") {
+                    info!("transaction has already been included");
+                    return Ok(None);
+                }
 
-    return (new_base_fee + new_max_priority_fee, new_max_priority_fee);
-}
+                return Err(anyhow::anyhow!(err));
+            }
+        };
+    }
 
-// Rule: both the tip and the max fee must
-// be bumped by a minimum of 10%
-// https://github.com/ethereum/go-ethereum/issues/23616#issuecomment-924657965
-fn increase_by_minimum(value: U256) -> U256 {
-    let increase = (value * 10) / 100u64;
-    value + increase + 1 // add 1 here for rounding purposes
+    fn bump_transaction(
+        &self,
+        tx: &mut Eip1559TransactionRequest,
+        estimate_max_fee: U256,
+        estimate_max_priority_fee: U256,
+    ) {
+        // We should never risk getting gas too low errors because we set these vals in send_monitored_transaction
+        let prev_max_priority_fee = tx
+            .max_priority_fee_per_gas
+            .unwrap_or(estimate_max_priority_fee);
+        let prev_max_fee = tx.max_fee_per_gas.unwrap_or(estimate_max_fee);
+
+        let new_max_priority_fee = max(
+            estimate_max_priority_fee,
+            self.increase_by_minimum(prev_max_priority_fee),
+        );
+
+        let estimate_base_fee = estimate_max_fee - estimate_max_priority_fee;
+        let prev_base_fee = prev_max_fee - prev_max_priority_fee;
+        let new_base_fee = max(estimate_base_fee, self.increase_by_minimum(prev_base_fee));
+        let new_max_fee = new_base_fee + new_max_priority_fee;
+
+        tx.max_fee_per_gas = Some(new_max_fee);
+        tx.max_priority_fee_per_gas = Some(new_max_priority_fee);
+    }
+
+    // Rule: both the tip and the max fee must
+    // be bumped by a minimum of 10%
+    // https://github.com/ethereum/go-ethereum/issues/23616#issuecomment-924657965
+    fn increase_by_minimum(&self, value: U256) -> U256 {
+        let increase = (value * 10) / 100u64;
+        value + increase + 1 // add 1 here for rounding purposes
+    }
 }
