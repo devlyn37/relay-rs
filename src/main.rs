@@ -85,10 +85,7 @@ async fn relay_transaction(
         .max_priority_fee_per_gas(1);
 
     info!("Transaction: {:?}", request);
-    let id = state
-        .monitor
-        .send_monitored_transaction(request, None)
-        .await?;
+    let id = state.monitor.send_monitored_transaction(request).await?;
 
     Ok(id.to_string())
 }

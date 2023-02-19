@@ -2,8 +2,7 @@ use anyhow::Context;
 use ethers::{
     providers::{Middleware, StreamExt},
     types::{
-        transaction::eip2718::TypedTransaction, BlockId, Eip1559TransactionRequest, TxHash, H256,
-        U256,
+        transaction::eip2718::TypedTransaction, Eip1559TransactionRequest, TxHash, H256, U256,
     },
 };
 use futures_util::lock::Mutex;
@@ -26,7 +25,7 @@ pub enum Status {
 #[derive(Debug)]
 pub struct TransactionMonitor<M> {
     pub provider: Arc<M>,
-    pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Option<BlockId>, Uuid)>>>, // Is the mutex really necessary here, we're only gonna have two tasks sharing this
+    pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Uuid)>>>, // Is the mutex really necessary here, we're only gonna have two tasks sharing this
     pub block_frequency: u8,
 }
 
@@ -64,7 +63,6 @@ where
     pub async fn send_monitored_transaction(
         &self,
         tx: Eip1559TransactionRequest,
-        block: Option<BlockId>,
     ) -> Result<Uuid, anyhow::Error> {
         let mut with_gas = tx.clone();
         if with_gas.max_fee_per_gas.is_none() || with_gas.max_priority_fee_per_gas.is_none() {
@@ -86,7 +84,7 @@ where
 
         let pending_tx = self
             .provider
-            .send_transaction(filled.clone(), block)
+            .send_transaction(filled.clone(), None)
             .await
             .with_context(|| "error sending transaction")?;
 
@@ -94,7 +92,7 @@ where
 
         // insert the tx in the pending txs
         let mut lock = self.txs.lock().await;
-        lock.push((*pending_tx, filled.clone().into(), block, id));
+        lock.push((*pending_tx, filled.clone().into(), id));
 
         Ok(id)
     }
@@ -103,7 +101,7 @@ where
     pub async fn get_transaction_status(&self, id: Uuid) -> Status {
         let lock = self.txs.lock().await;
         info!("here's the current txs {:?}", lock);
-        match lock.iter().find(|(_, _, _, entry_id)| id == *entry_id) {
+        match lock.iter().find(|(_, _, entry_id)| id == *entry_id) {
             None => Status::Complete,
             Some(_) => Status::Pending,
         }
@@ -144,7 +142,7 @@ where
 
             for _ in 0..len {
                 // this must never panic as we're explicitly within bounds
-                let (tx_hash, mut replacement_tx, priority, id) =
+                let (tx_hash, mut replacement_tx, id) =
                     txs.pop().expect("should have element in vector");
 
                 let tx_has_been_included = block
@@ -164,7 +162,7 @@ where
                         "transaction {:?} was not included, not sending replacement yet",
                         tx_hash
                     );
-                    txs.push((tx_hash, replacement_tx, priority, id));
+                    txs.push((tx_hash, replacement_tx, id));
                     continue;
                 }
 
@@ -173,13 +171,12 @@ where
                         &mut replacement_tx,
                         estimate_max_fee,
                         estimate_max_priority_fee,
-                        priority,
                     )
                     .await?
                 {
                     Some(new_txhash) => {
                         info!("Transaction {:?} replaced with {:?}", tx_hash, new_txhash);
-                        txs.push((new_txhash, replacement_tx, priority, id));
+                        txs.push((new_txhash, replacement_tx, id));
                         sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
                     }
                     None => {}
@@ -195,11 +192,10 @@ where
         tx: &mut Eip1559TransactionRequest,
         estimate_max_fee: U256,
         estimate_max_priority_fee: U256,
-        priority: Option<BlockId>,
     ) -> Result<Option<H256>, anyhow::Error> {
         self.bump_transaction(tx, estimate_max_fee, estimate_max_priority_fee);
 
-        match self.provider.send_transaction(tx.clone(), priority).await {
+        match self.provider.send_transaction(tx.clone(), None).await {
             Ok(new_tx_hash) => {
                 return Ok(Some(*new_tx_hash));
             }
@@ -241,8 +237,18 @@ where
         let new_base_fee = max(estimate_base_fee, self.increase_by_minimum(prev_base_fee));
         let new_max_fee = new_base_fee + new_max_priority_fee;
 
+        info!(
+            "before: max_fee: {:?}, max_priority_fee: {:?}",
+            tx.max_fee_per_gas, tx.max_priority_fee_per_gas
+        );
+
         tx.max_fee_per_gas = Some(new_max_fee);
         tx.max_priority_fee_per_gas = Some(new_max_priority_fee);
+
+        info!(
+            "after: max_fee: {:?}, max_priority_fee: {:?}",
+            tx.max_fee_per_gas, tx.max_priority_fee_per_gas
+        );
     }
 
     // Rule: both the tip and the max fee must
