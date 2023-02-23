@@ -14,9 +14,11 @@ use ethers::{
     signers::{LocalWallet, Signer},
 };
 use serde::Deserialize;
-use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
+use sqlx::{mysql::MySqlPoolOptions, FromRow};
+use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
 use uuid::Uuid;
+
 mod transaction_monitor;
 pub use transaction_monitor::TransactionMonitor;
 
@@ -26,6 +28,7 @@ type ConfigedMonitor = TransactionMonitor<ConfigedProvider>;
 #[derive(Debug)]
 struct AppState {
     monitor: ConfigedMonitor,
+    connection_pool: sqlx::MySqlPool,
 }
 
 #[tokio::main]
@@ -40,11 +43,18 @@ async fn main() {
         .init();
     // console_subscriber::init();
 
-    let pk_hex_string =
-        std::env::var("PK").expect("Server not configured correctly, no private key");
-    let provider_url =
-        std::env::var("PROVIDER_URL").expect("Server not configured correctly, no provider url");
-    let port = std::env::var("PORT").map_or(3000, |s| s.parse().expect("Port should be a number"));
+    let pk_hex_string = env::var("PK").expect("Missing \"PK\" Env Var");
+    let provider_url = env::var("PROVIDER_URL").expect("Missing \"PROVIDER_URL\" Env Var");
+    let database_url = env::var("DATABASE_URL").expect("Missing \"DATABASE_URL\" Env Var");
+    let port = env::var("PORT").map_or(3000, |s| {
+        s.parse().expect("Missing or invalid \"PORT\" Env Var")
+    });
+
+    let connection_pool = MySqlPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("Could not connect to database");
 
     let signer = LocalWallet::from_str(&pk_hex_string)
         .expect("Server not configured correct, invalid private key");
@@ -58,7 +68,10 @@ async fn main() {
     let provider = NonceManagerMiddleware::new(provider, address);
     let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3);
 
-    let shared_state = Arc::new(AppState { monitor });
+    let shared_state = Arc::new(AppState {
+        monitor,
+        connection_pool,
+    });
 
     let app = Router::new()
         .route("/transaction", post(relay_transaction))
@@ -91,8 +104,11 @@ async fn relay_transaction(
 }
 
 async fn transaction_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> String {
-    let status = state.monitor.get_transaction_status(id).await;
-    format!("{:?}", status)
+    let request = sqlx::query!("SELECT * FROM requests WHERE id = ?", id.to_string())
+        .fetch_one(&state.connection_pool)
+        .await
+        .expect("Could not find transaction in database"); // TODO 404 and all that jazz
+    format!("{:?}", request)
 }
 
 #[derive(Deserialize)]
@@ -132,3 +148,23 @@ where
         Self(err.into())
     }
 }
+
+// CREATE TABLE requests (
+//   id varchar(255) NOT NULL PRIMARY KEY,
+//   to_address varchar(42) NOT NULL,
+// 	value varchar(78) NOT NULL,
+// 	data varchar(255) NOT NULL,
+// 	tx_hash varchar(66)
+// );
+
+// INSERT INTO requests (id, to_address, value, data, tx_hash)
+// VALUES ('b55dae22-dfc7-4d39-bc20-48aa5e1197f9', '0xE898BBd704CCE799e9593a9ADe2c1cA0351Ab660', '100000', '0x0', '0x8097262014c0301ff70491a74cb9585549eae1a111ffb6a33318cc6d2e1958a0')
+
+// #[derive(FromRow)]
+// struct RelayRecord {
+//     id: Uuid,
+//     to_address: Address,
+//     value: Numeric,
+//     data: String,
+//     tx_hash: Option<String>,
+// }
