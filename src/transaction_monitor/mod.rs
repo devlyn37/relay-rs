@@ -1,4 +1,3 @@
-use anyhow::Context;
 use ethers::{
     providers::{Middleware, StreamExt},
     types::{
@@ -7,7 +6,7 @@ use ethers::{
 };
 use futures_util::lock::Mutex;
 use std::{cmp::max, pin::Pin, sync::Arc};
-use tracing::{info, trace};
+use tracing::info;
 use uuid::Uuid;
 
 use tokio::{
@@ -66,27 +65,16 @@ where
     ) -> Result<Uuid, anyhow::Error> {
         let mut with_gas = tx.clone();
         if with_gas.max_fee_per_gas.is_none() || with_gas.max_priority_fee_per_gas.is_none() {
-            let (estimate_max_fee, estimate_max_priority_fee) = self
-                .provider
-                .estimate_eip1559_fees(None)
-                .await
-                .with_context(|| "error estimating gas")?;
+            let (estimate_max_fee, estimate_max_priority_fee) =
+                self.provider.estimate_eip1559_fees(None).await?;
             with_gas.max_fee_per_gas = Some(estimate_max_fee);
             with_gas.max_priority_fee_per_gas = Some(estimate_max_priority_fee);
         }
         let mut filled: TypedTransaction = with_gas.clone().into();
-        self.provider
-            .fill_transaction(&mut filled, None)
-            .await
-            .with_context(|| "error while filling transaction")?;
-
+        self.provider.fill_transaction(&mut filled, None).await?;
         info!("Filled Transaction {:?}", filled);
 
-        let pending_tx = self
-            .provider
-            .send_transaction(filled.clone(), None)
-            .await
-            .with_context(|| "error sending transaction")?;
+        let pending_tx = self.provider.send_transaction(filled.clone(), None).await?;
 
         let id = Uuid::new_v4();
 
@@ -109,13 +97,8 @@ where
 
     pub async fn monitor(&self) -> Result<(), anyhow::Error> {
         info!("Monitoring for escalation!");
-        let mut watcher: WatcherFuture = Box::pin(
-            self.provider
-                .watch_blocks()
-                .await
-                .with_context(|| "Block streaming failure")?
-                .map(|hash| (hash)),
-        );
+        let mut watcher: WatcherFuture =
+            Box::pin(self.provider.watch_blocks().await?.map(|hash| (hash)));
         let mut block_count = 0;
 
         while let Some(block_hash) = watcher.next().await {
@@ -123,20 +106,11 @@ where
             info!("Block {:?} has been mined", block_hash);
             block_count = block_count + 1;
 
-            let block = self
-                .provider
-                .get_block_with_txs(block_hash)
-                .await
-                .with_context(|| "error while fetching block")?
-                .unwrap();
+            let block = self.provider.get_block_with_txs(block_hash).await?.unwrap();
             sleep(Duration::from_secs(1)).await; // to avoid rate limiting
 
-            let (estimate_max_fee, estimate_max_priority_fee) = self
-                .provider
-                .estimate_eip1559_fees(None)
-                .await
-                .with_context(|| "error estimating gas prices")?;
-
+            let (estimate_max_fee, estimate_max_priority_fee) =
+                self.provider.estimate_eip1559_fees(None).await?;
             let mut txs = self.txs.lock().await;
             let len = txs.len();
 
@@ -150,7 +124,6 @@ where
                     .iter()
                     .find(|tx| tx.hash == tx_hash)
                     .is_some();
-                info!("checking if transaction {:?} was included", tx_hash);
 
                 if tx_has_been_included {
                     info!("transaction {:?} was included", tx_hash);
@@ -166,6 +139,7 @@ where
                     continue;
                 }
 
+                info!("Rebroadcasting {:?}", tx_hash);
                 match self
                     .rebroadcast(
                         &mut replacement_tx,
@@ -200,11 +174,6 @@ where
                 return Ok(Some(*new_tx_hash));
             }
             Err(err) => {
-                // ignore "nonce too low" errors because they
-                // may happen if we try to broadcast a higher
-                // gas price tx when one of the previous ones
-                // was already mined (meaning we also do not
-                // push it back to the pending txs vector)
                 if err.to_string().contains("nonce too low") {
                     info!("transaction has already been included");
                     return Ok(None);
