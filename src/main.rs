@@ -108,7 +108,7 @@ async fn transaction_status(State(state): State<Arc<AppState>>, Path(id): Path<U
         .fetch_one(&state.connection_pool)
         .await
         .expect("Could not find transaction in database"); // TODO 404 and all that jazz
-    format!("{:?}", request)
+    format!("{:?}", request.status)
 }
 
 #[derive(Deserialize)]
@@ -154,7 +154,8 @@ where
 //   to_address varchar(42) NOT NULL,
 // 	value varchar(78) NOT NULL,
 // 	data varchar(255) NOT NULL,
-// 	tx_hash varchar(66)
+// 	tx_hash varchar(66),
+// 	status varchar(255) NOT NULL DEFAULT 'pending'
 // );
 
 // INSERT INTO requests (id, to_address, value, data, tx_hash)
