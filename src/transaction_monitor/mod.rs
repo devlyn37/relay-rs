@@ -5,6 +5,7 @@ use ethers::{
     },
 };
 use futures_util::lock::Mutex;
+use sqlx::{query, MySqlPool};
 use std::{cmp::max, pin::Pin, sync::Arc};
 use tracing::info;
 use uuid::Uuid;
@@ -16,16 +17,11 @@ use tokio::{
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = H256> + Send + 'a>>;
 
 #[derive(Debug)]
-pub enum Status {
-    Pending,
-    Complete,
-}
-
-#[derive(Debug)]
 pub struct TransactionMonitor<M> {
     pub provider: Arc<M>,
     pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Uuid)>>>, // Is the mutex really necessary here, we're only gonna have two tasks sharing this
     pub block_frequency: u8,
+    pub connection_pool: MySqlPool,
 }
 
 impl<M> Clone for TransactionMonitor<M> {
@@ -34,6 +30,7 @@ impl<M> Clone for TransactionMonitor<M> {
             provider: self.provider.clone(),
             txs: self.txs.clone(),
             block_frequency: self.block_frequency.clone(),
+            connection_pool: self.connection_pool.clone(),
         }
     }
 }
@@ -42,11 +39,12 @@ impl<M> TransactionMonitor<M>
 where
     M: Middleware + 'static,
 {
-    pub fn new(provider: M, block_frequency: u8) -> Self {
+    pub fn new(provider: M, block_frequency: u8, connection_pool: MySqlPool) -> Self {
         let this = Self {
             provider: Arc::new(provider),
             txs: Arc::new(Mutex::new(Vec::new())),
             block_frequency,
+            connection_pool,
         };
 
         {
@@ -85,14 +83,12 @@ where
         Ok(id)
     }
 
-    // TODO improve this XD
-    pub async fn get_transaction_status(&self, id: Uuid) -> Status {
-        let lock = self.txs.lock().await;
-        info!("here's the current txs {:?}", lock);
-        match lock.iter().find(|(_, _, entry_id)| id == *entry_id) {
-            None => Status::Complete,
-            Some(_) => Status::Pending,
-        }
+    pub async fn get_transaction_status(&self, id: Uuid) -> String {
+        let request = query!("SELECT * FROM requests WHERE id = ?", id.to_string())
+            .fetch_one(&self.connection_pool)
+            .await
+            .expect("Could not find transaction in database"); // TODO 404 and all that jazz
+        format!("{:?}", request.status)
     }
 
     pub async fn monitor(&self) -> Result<(), anyhow::Error> {
@@ -228,3 +224,24 @@ where
         value + increase + 1 // add 1 here for rounding purposes
     }
 }
+
+// CREATE TABLE requests (
+//   id varchar(255) NOT NULL PRIMARY KEY,
+//   to_address varchar(42) NOT NULL,
+// 	value varchar(78) NOT NULL,
+// 	data varchar(255) NOT NULL,
+// 	tx_hash varchar(66),
+// 	status varchar(255) NOT NULL DEFAULT 'pending'
+// );
+
+// INSERT INTO requests (id, to_address, value, data, tx_hash)
+// VALUES ('b55dae22-dfc7-4d39-bc20-48aa5e1197f9', '0xE898BBd704CCE799e9593a9ADe2c1cA0351Ab660', '100000', '0x0', '0x8097262014c0301ff70491a74cb9585549eae1a111ffb6a33318cc6d2e1958a0')
+
+// #[derive(FromRow)]
+// struct StoredTransaction {
+//     id: Uuid,
+//     to_address: Address,
+//     value: Numeric,
+//     data: String,
+//     tx_hash: Option<String>,
+// }

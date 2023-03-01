@@ -14,7 +14,7 @@ use ethers::{
     signers::{LocalWallet, Signer},
 };
 use serde::Deserialize;
-use sqlx::{mysql::MySqlPoolOptions, FromRow};
+use sqlx::mysql::MySqlPoolOptions;
 use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
 use uuid::Uuid;
@@ -28,7 +28,6 @@ type ConfigedMonitor = TransactionMonitor<ConfigedProvider>;
 #[derive(Debug)]
 struct AppState {
     monitor: ConfigedMonitor,
-    connection_pool: sqlx::MySqlPool,
 }
 
 #[tokio::main]
@@ -66,12 +65,9 @@ async fn main() {
         .await
         .expect("Could not connect to provider");
     let provider = NonceManagerMiddleware::new(provider, address);
-    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3);
+    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3, connection_pool);
 
-    let shared_state = Arc::new(AppState {
-        monitor,
-        connection_pool,
-    });
+    let shared_state = Arc::new(AppState { monitor });
 
     let app = Router::new()
         .route("/transaction", post(relay_transaction))
@@ -104,11 +100,9 @@ async fn relay_transaction(
 }
 
 async fn transaction_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> String {
-    let request = sqlx::query!("SELECT * FROM requests WHERE id = ?", id.to_string())
-        .fetch_one(&state.connection_pool)
-        .await
-        .expect("Could not find transaction in database"); // TODO 404 and all that jazz
-    format!("{:?}", request.status)
+    info!("Hey I'm running");
+    let status = state.monitor.get_transaction_status(id).await;
+    format!("{:?}", status)
 }
 
 #[derive(Deserialize)]
@@ -148,24 +142,3 @@ where
         Self(err.into())
     }
 }
-
-// CREATE TABLE requests (
-//   id varchar(255) NOT NULL PRIMARY KEY,
-//   to_address varchar(42) NOT NULL,
-// 	value varchar(78) NOT NULL,
-// 	data varchar(255) NOT NULL,
-// 	tx_hash varchar(66),
-// 	status varchar(255) NOT NULL DEFAULT 'pending'
-// );
-
-// INSERT INTO requests (id, to_address, value, data, tx_hash)
-// VALUES ('b55dae22-dfc7-4d39-bc20-48aa5e1197f9', '0xE898BBd704CCE799e9593a9ADe2c1cA0351Ab660', '100000', '0x0', '0x8097262014c0301ff70491a74cb9585549eae1a111ffb6a33318cc6d2e1958a0')
-
-// #[derive(FromRow)]
-// struct RelayRecord {
-//     id: Uuid,
-//     to_address: Address,
-//     value: Numeric,
-//     data: String,
-//     tx_hash: Option<String>,
-// }
