@@ -102,7 +102,7 @@ where
         Ok(request.status)
     }
 
-    pub async fn monitor(&self) -> Result<(), anyhow::Error> {
+    pub async fn monitor(&self) -> anyhow::Result<()> {
         info!("Monitoring for escalation!");
         let mut watcher: WatcherFuture =
             Box::pin(self.provider.watch_blocks().await?.map(|hash| (hash)));
@@ -128,14 +128,9 @@ where
             )
             .fetch_all(&self.connection_pool)
             .await?;
-
-            let len = requests.len();
-
             let mut updates: Vec<String> = Vec::new();
 
-            for i in 0..len {
-                // this must never panic as we're explicitly within bounds
-                let request = requests[i].clone();
+            for request in requests {
                 let Request { tx_hash, id, .. } = request;
                 let mut replacement_tx: Eip1559TransactionRequest = request.tx.0.into();
 
@@ -202,7 +197,6 @@ where
             }
 
             if updates.len() > 0 {
-                info!("Updating transaction in the database");
                 let mut tx = self.connection_pool.begin().await?;
 
                 for update in updates {
@@ -210,7 +204,6 @@ where
                 }
 
                 tx.commit().await?;
-                info!("successfully saved each of the transaction updates");
             }
         }
 
@@ -222,7 +215,7 @@ where
         tx: &mut Eip1559TransactionRequest,
         estimate_max_fee: U256,
         estimate_max_priority_fee: U256,
-    ) -> Result<Option<TxHash>, anyhow::Error> {
+    ) -> anyhow::Result<Option<TxHash>> {
         self.bump_transaction(tx, estimate_max_fee, estimate_max_priority_fee);
 
         match self.provider.send_transaction(tx.clone(), None).await {

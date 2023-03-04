@@ -13,6 +13,7 @@ use ethers::{
     providers::{Http, Provider},
     signers::{LocalWallet, Signer},
 };
+use futures_util::future::ok;
 use serde::Deserialize;
 use sqlx::mysql::MySqlPoolOptions;
 use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
@@ -103,8 +104,10 @@ async fn transaction_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<String, AppError> {
-    let id = state.monitor.get_transaction_status(id).await?;
-    Ok(id)
+    match state.monitor.get_transaction_status(id).await {
+        Ok(status) => Ok(status.to_string()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[derive(Deserialize)]
