@@ -14,9 +14,11 @@ use ethers::{
     signers::{LocalWallet, Signer},
 };
 use serde::Deserialize;
-use std::{fmt, net::SocketAddr, str::FromStr, sync::Arc};
+use sqlx::mysql::MySqlPoolOptions;
+use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
 use uuid::Uuid;
+
 mod transaction_monitor;
 pub use transaction_monitor::TransactionMonitor;
 
@@ -40,11 +42,18 @@ async fn main() {
         .init();
     // console_subscriber::init();
 
-    let pk_hex_string =
-        std::env::var("PK").expect("Server not configured correctly, no private key");
-    let provider_url =
-        std::env::var("PROVIDER_URL").expect("Server not configured correctly, no provider url");
-    let port = std::env::var("PORT").map_or(3000, |s| s.parse().expect("Port should be a number"));
+    let pk_hex_string = env::var("PK").expect("Missing \"PK\" Env Var");
+    let provider_url = env::var("PROVIDER_URL").expect("Missing \"PROVIDER_URL\" Env Var");
+    let database_url = env::var("DATABASE_URL").expect("Missing \"DATABASE_URL\" Env Var");
+    let port = env::var("PORT").map_or(3000, |s| {
+        s.parse().expect("Missing or invalid \"PORT\" Env Var")
+    });
+
+    let connection_pool = MySqlPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("Could not connect to database");
 
     let signer = LocalWallet::from_str(&pk_hex_string)
         .expect("Server not configured correct, invalid private key");
@@ -56,7 +65,7 @@ async fn main() {
         .await
         .expect("Could not connect to provider");
     let provider = NonceManagerMiddleware::new(provider, address);
-    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3);
+    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3, connection_pool);
 
     let shared_state = Arc::new(AppState { monitor });
 
@@ -90,9 +99,12 @@ async fn relay_transaction(
     Ok(id.to_string())
 }
 
-async fn transaction_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> String {
-    let status = state.monitor.get_transaction_status(id).await;
-    format!("{:?}", status)
+async fn transaction_status(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<String, AppError> {
+    let id = state.monitor.get_transaction_status(id).await?;
+    Ok(id)
 }
 
 #[derive(Deserialize)]
