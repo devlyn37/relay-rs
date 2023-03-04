@@ -284,23 +284,6 @@ where
         value + increase + 1 // add 1 here for rounding purposes
     }
 }
-
-// Store all the transaction in the database just like they're stored in txns vector
-// every time a block is mined we fetch pending transactions
-// After we've broadcasted all transactions then we write to the db
-
-// if this thing shuts off, we can run a recovery sequence that will rebroadcast as needed
-
-// CREATE TABLE requests (
-//   id varchar(255) NOT NULL PRIMARY KEY,
-// 	tx_hash varchar(66) NOT NULL,
-// 	tx JSON Default '{}' NOT NULL,
-// 	status varchar(255) NOT NULL DEFAULT 'pending'
-// );
-
-// INSERT INTO requests (id, to_address, value, data, tx_hash)
-// VALUES ('b55dae22-dfc7-4d39-bc20-48aa5e1197f9', '0xE898BBd704CCE799e9593a9ADe2c1cA0351Ab660', '100000', '0x0', '0x8097262014c0301ff70491a74cb9585549eae1a111ffb6a33318cc6d2e1958a0')
-
 #[derive(FromRow, Clone, Debug)]
 struct Request {
     id: String,
