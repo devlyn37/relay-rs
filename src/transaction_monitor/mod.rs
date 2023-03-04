@@ -1,11 +1,10 @@
 use ethers::{
     providers::{Middleware, StreamExt},
-    types::{
-        transaction::eip2718::TypedTransaction, Eip1559TransactionRequest, TxHash, H256, U256,
-    },
+    types::{transaction::eip2718::TypedTransaction, Eip1559TransactionRequest, TxHash, U256},
+    utils::__serde_json::to_value,
 };
-use futures_util::lock::Mutex;
-use sqlx::{query, MySqlPool};
+
+use sqlx::{query, query_as, types::Json, FromRow, MySqlPool};
 use std::{cmp::max, pin::Pin, sync::Arc};
 use tracing::info;
 use uuid::Uuid;
@@ -14,12 +13,11 @@ use tokio::{
     spawn,
     time::{sleep, Duration},
 };
-type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = H256> + Send + 'a>>;
+type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = TxHash> + Send + 'a>>;
 
 #[derive(Debug)]
 pub struct TransactionMonitor<M> {
     pub provider: Arc<M>,
-    pub txs: Arc<Mutex<Vec<(TxHash, Eip1559TransactionRequest, Uuid)>>>, // Is the mutex really necessary here, we're only gonna have two tasks sharing this
     pub block_frequency: u8,
     pub connection_pool: MySqlPool,
 }
@@ -28,7 +26,6 @@ impl<M> Clone for TransactionMonitor<M> {
     fn clone(&self) -> Self {
         TransactionMonitor {
             provider: self.provider.clone(),
-            txs: self.txs.clone(),
             block_frequency: self.block_frequency.clone(),
             connection_pool: self.connection_pool.clone(),
         }
@@ -42,7 +39,6 @@ where
     pub fn new(provider: M, block_frequency: u8, connection_pool: MySqlPool) -> Self {
         let this = Self {
             provider: Arc::new(provider),
-            txs: Arc::new(Mutex::new(Vec::new())),
             block_frequency,
             connection_pool,
         };
@@ -60,7 +56,7 @@ where
     pub async fn send_monitored_transaction(
         &self,
         tx: Eip1559TransactionRequest,
-    ) -> Result<Uuid, anyhow::Error> {
+    ) -> anyhow::Result<Uuid> {
         let mut with_gas = tx.clone();
         if with_gas.max_fee_per_gas.is_none() || with_gas.max_priority_fee_per_gas.is_none() {
             let (estimate_max_fee, estimate_max_priority_fee) =
@@ -73,22 +69,37 @@ where
         info!("Filled Transaction {:?}", filled);
 
         let pending_tx = self.provider.send_transaction(filled.clone(), None).await?;
-
         let id = Uuid::new_v4();
-
-        // insert the tx in the pending txs
-        let mut lock = self.txs.lock().await;
-        lock.push((*pending_tx, filled.clone().into(), id));
+        query!(
+            r#"
+						INSERT INTO requests (id, tx_hash, tx, status) 
+						VALUES (?, ?, ?, ?)
+						"#,
+            id.to_string(),
+            pending_tx.to_string(),
+            to_value(filled).expect("ahh").to_string(),
+            "pending"
+        )
+        .execute(&self.connection_pool)
+        .await?;
 
         Ok(id)
     }
 
-    pub async fn get_transaction_status(&self, id: Uuid) -> String {
-        let request = query!("SELECT * FROM requests WHERE id = ?", id.to_string())
-            .fetch_one(&self.connection_pool)
-            .await
-            .expect("Could not find transaction in database"); // TODO 404 and all that jazz
-        format!("{:?}", request.status)
+    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<String> {
+        let request = query_as!(
+            Request,
+            r#"
+						SELECT id, tx_hash, status, tx as "tx: Json<TypedTransaction>"
+						FROM requests 
+						WHERE id = ?
+						"#,
+            id.to_string()
+        )
+        .fetch_one(&self.connection_pool)
+        .await?;
+
+        Ok(request.status)
     }
 
     pub async fn monitor(&self) -> Result<(), anyhow::Error> {
@@ -107,22 +118,43 @@ where
 
             let (estimate_max_fee, estimate_max_priority_fee) =
                 self.provider.estimate_eip1559_fees(None).await?;
-            let mut txs = self.txs.lock().await;
-            let len = txs.len();
+            let requests = query_as!(
+                Request,
+                r#"
+									SELECT id, tx_hash, status, tx as "tx: Json<TypedTransaction>"
+									FROM requests 
+									WHERE status = 'pending'
+									"#
+            )
+            .fetch_all(&self.connection_pool)
+            .await?;
 
-            for _ in 0..len {
+            let len = requests.len();
+
+            let mut updates: Vec<String> = Vec::new();
+
+            for i in 0..len {
                 // this must never panic as we're explicitly within bounds
-                let (tx_hash, mut replacement_tx, id) =
-                    txs.pop().expect("should have element in vector");
+                let request = requests[i].clone();
+                let Request { tx_hash, id, .. } = request;
+                let mut replacement_tx: Eip1559TransactionRequest = request.tx.0.into();
 
                 let tx_has_been_included = block
                     .transactions
                     .iter()
-                    .find(|tx| tx.hash == tx_hash)
+                    .find(|tx| tx.hash.to_string() == tx_hash)
                     .is_some();
 
                 if tx_has_been_included {
                     info!("transaction {:?} was included", tx_hash);
+                    updates.push(format!(
+                        r#"
+												UPDATE requests
+												SET status = 'complete'
+												WHERE id = '{}';
+												"#,
+                        id.to_string()
+                    ));
                     continue;
                 }
 
@@ -131,7 +163,6 @@ where
                         "transaction {:?} was not included, not sending replacement yet",
                         tx_hash
                     );
-                    txs.push((tx_hash, replacement_tx, id));
                     continue;
                 }
 
@@ -146,11 +177,40 @@ where
                 {
                     Some(new_txhash) => {
                         info!("Transaction {:?} replaced with {:?}", tx_hash, new_txhash);
-                        txs.push((new_txhash, replacement_tx, id));
+                        updates.push(format!(
+                            r#"
+														UPDATE requests
+														SET tx_hash = '{}' 
+														WHERE id = '{}';
+														"#,
+                            new_txhash.to_string(),
+                            id.to_string()
+                        ));
                         sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
                     }
-                    None => {}
+                    None => {
+                        updates.push(format!(
+                            r#"
+												UPDATE requests
+												SET status = 'complete'
+												WHERE id = '{}';
+												"#,
+                            id.to_string()
+                        ));
+                    }
                 }
+            }
+
+            if updates.len() > 0 {
+                info!("Updating transaction in the database");
+                let mut tx = self.connection_pool.begin().await?;
+
+                for update in updates {
+                    query(&update).execute(&mut tx).await?;
+                }
+
+                tx.commit().await?;
+                info!("successfully saved each of the transaction updates");
             }
         }
 
@@ -162,7 +222,7 @@ where
         tx: &mut Eip1559TransactionRequest,
         estimate_max_fee: U256,
         estimate_max_priority_fee: U256,
-    ) -> Result<Option<H256>, anyhow::Error> {
+    ) -> Result<Option<TxHash>, anyhow::Error> {
         self.bump_transaction(tx, estimate_max_fee, estimate_max_priority_fee);
 
         match self.provider.send_transaction(tx.clone(), None).await {
@@ -225,23 +285,26 @@ where
     }
 }
 
+// Store all the transaction in the database just like they're stored in txns vector
+// every time a block is mined we fetch pending transactions
+// After we've broadcasted all transactions then we write to the db
+
+// if this thing shuts off, we can run a recovery sequence that will rebroadcast as needed
+
 // CREATE TABLE requests (
 //   id varchar(255) NOT NULL PRIMARY KEY,
-//   to_address varchar(42) NOT NULL,
-// 	value varchar(78) NOT NULL,
-// 	data varchar(255) NOT NULL,
-// 	tx_hash varchar(66),
+// 	tx_hash varchar(66) NOT NULL,
+// 	tx JSON Default '{}' NOT NULL,
 // 	status varchar(255) NOT NULL DEFAULT 'pending'
 // );
 
 // INSERT INTO requests (id, to_address, value, data, tx_hash)
 // VALUES ('b55dae22-dfc7-4d39-bc20-48aa5e1197f9', '0xE898BBd704CCE799e9593a9ADe2c1cA0351Ab660', '100000', '0x0', '0x8097262014c0301ff70491a74cb9585549eae1a111ffb6a33318cc6d2e1958a0')
 
-// #[derive(FromRow)]
-// struct StoredTransaction {
-//     id: Uuid,
-//     to_address: Address,
-//     value: Numeric,
-//     data: String,
-//     tx_hash: Option<String>,
-// }
+#[derive(FromRow, Clone, Debug)]
+struct Request {
+    id: String,
+    tx: Json<TypedTransaction>,
+    tx_hash: String,
+    status: String,
+}

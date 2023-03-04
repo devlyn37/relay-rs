@@ -99,10 +99,12 @@ async fn relay_transaction(
     Ok(id.to_string())
 }
 
-async fn transaction_status(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>) -> String {
-    info!("Hey I'm running");
-    let status = state.monitor.get_transaction_status(id).await;
-    format!("{:?}", status)
+async fn transaction_status(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<String, AppError> {
+    let id = state.monitor.get_transaction_status(id).await?;
+    Ok(id)
 }
 
 #[derive(Deserialize)]
