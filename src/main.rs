@@ -13,8 +13,8 @@ use ethers::{
     providers::{Http, Provider},
     signers::{LocalWallet, Signer},
 };
-use futures_util::future::ok;
-use serde::Deserialize;
+
+use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPoolOptions;
 use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
@@ -100,14 +100,18 @@ async fn relay_transaction(
     Ok(id.to_string())
 }
 
+#[derive(Deserialize, Serialize)]
+struct TransactionStatus {
+    status: String,
+    hash: String,
+}
+
 async fn transaction_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-) -> Result<String, AppError> {
-    match state.monitor.get_transaction_status(id).await {
-        Ok(status) => Ok(status.to_string()),
-        Err(e) => Err(e.into()),
-    }
+) -> Result<Json<TransactionStatus>, AppError> {
+    let (status, hash) = state.monitor.get_transaction_status(id).await?;
+    Ok(Json(TransactionStatus { status, hash }))
 }
 
 #[derive(Deserialize)]

@@ -1,8 +1,8 @@
 use ethers::{
     providers::{Middleware, StreamExt},
     types::{transaction::eip2718::TypedTransaction, Eip1559TransactionRequest, TxHash, U256},
-    utils::__serde_json::to_value,
 };
+use serde_json::to_string;
 
 use sqlx::{query, query_as, types::Json, FromRow, MySqlPool};
 use std::{cmp::max, pin::Pin, sync::Arc};
@@ -76,8 +76,8 @@ where
 						VALUES (?, ?, ?, ?)
 						"#,
             id.to_string(),
-            pending_tx.to_string(),
-            to_value(filled).expect("ahh").to_string(),
+            format!("{:?}", pending_tx.tx_hash()),
+            to_string(&filled)?,
             "pending"
         )
         .execute(&self.connection_pool)
@@ -86,7 +86,7 @@ where
         Ok(id)
     }
 
-    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<String> {
+    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<(String, String)> {
         let request = query_as!(
             Request,
             r#"
@@ -99,7 +99,7 @@ where
         .fetch_one(&self.connection_pool)
         .await?;
 
-        Ok(request.status)
+        Ok((request.status, request.tx_hash))
     }
 
     pub async fn monitor(&self) -> anyhow::Result<()> {
@@ -178,7 +178,7 @@ where
 														SET tx_hash = '{}' 
 														WHERE id = '{}';
 														"#,
-                            new_txhash.to_string(),
+                            format!("{:?}", new_txhash),
                             id.to_string()
                         ));
                         sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
