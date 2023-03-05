@@ -2,10 +2,11 @@ use ethers::{
     providers::{Middleware, StreamExt},
     types::{transaction::eip2718::TypedTransaction, Eip1559TransactionRequest, TxHash, U256},
 };
-use serde_json::to_string;
+mod transaction_repository;
+use transaction_repository::{DbTxRequestRepository, Request, RequestUpdate};
 
-use sqlx::{query, query_as, types::Json, FromRow, MySqlPool};
-use std::{cmp::max, pin::Pin, sync::Arc};
+use sqlx::MySqlPool;
+use std::{cmp::max, pin::Pin, str::FromStr, sync::Arc};
 use tracing::info;
 use uuid::Uuid;
 
@@ -13,13 +14,14 @@ use tokio::{
     spawn,
     time::{sleep, Duration},
 };
+
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = TxHash> + Send + 'a>>;
 
 #[derive(Debug)]
 pub struct TransactionMonitor<M> {
     pub provider: Arc<M>,
     pub block_frequency: u8,
-    pub connection_pool: MySqlPool,
+    pub tx_repo: DbTxRequestRepository,
 }
 
 impl<M> Clone for TransactionMonitor<M> {
@@ -27,7 +29,7 @@ impl<M> Clone for TransactionMonitor<M> {
         TransactionMonitor {
             provider: self.provider.clone(),
             block_frequency: self.block_frequency.clone(),
-            connection_pool: self.connection_pool.clone(),
+            tx_repo: self.tx_repo.clone(),
         }
     }
 }
@@ -40,7 +42,7 @@ where
         let this = Self {
             provider: Arc::new(provider),
             block_frequency,
-            connection_pool,
+            tx_repo: DbTxRequestRepository::new(connection_pool),
         };
 
         {
@@ -70,36 +72,15 @@ where
 
         let pending_tx = self.provider.send_transaction(filled.clone(), None).await?;
         let id = Uuid::new_v4();
-        query!(
-            r#"
-						INSERT INTO requests (id, tx_hash, tx, status) 
-						VALUES (?, ?, ?, ?)
-						"#,
-            id.to_string(),
-            format!("{:?}", pending_tx.tx_hash()),
-            to_string(&filled)?,
-            "pending"
-        )
-        .execute(&self.connection_pool)
-        .await?;
+        let tx_hash = pending_tx.tx_hash();
+        self.tx_repo.save(id, tx_hash, filled.into(), false).await?;
 
         Ok(id)
     }
 
-    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<(String, String)> {
-        let request = query_as!(
-            Request,
-            r#"
-						SELECT id, tx_hash, status, tx as "tx: Json<TypedTransaction>"
-						FROM requests 
-						WHERE id = ?
-						"#,
-            id.to_string()
-        )
-        .fetch_one(&self.connection_pool)
-        .await?;
-
-        Ok((request.status, request.tx_hash))
+    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<(bool, String)> {
+        let request = self.tx_repo.get(id).await?;
+        Ok((request.mined, request.hash))
     }
 
     pub async fn monitor(&self) -> anyhow::Result<()> {
@@ -118,50 +99,36 @@ where
 
             let (estimate_max_fee, estimate_max_priority_fee) =
                 self.provider.estimate_eip1559_fees(None).await?;
-            let requests = query_as!(
-                Request,
-                r#"
-									SELECT id, tx_hash, status, tx as "tx: Json<TypedTransaction>"
-									FROM requests 
-									WHERE status = 'pending'
-									"#
-            )
-            .fetch_all(&self.connection_pool)
-            .await?;
-            let mut updates: Vec<String> = Vec::new();
+            let requests = self.tx_repo.get_pending().await?;
+            let mut updates: Vec<RequestUpdate> = Vec::new();
 
             for request in requests {
-                let Request { tx_hash, id, .. } = request;
+                let Request { hash, id, .. } = request;
+                let hash = TxHash::from_str(&hash)?;
+                let id = Uuid::from_str(&id)?;
                 let mut replacement_tx: Eip1559TransactionRequest = request.tx.0.into();
 
                 let tx_has_been_included = block
                     .transactions
                     .iter()
-                    .find(|tx| tx.hash.to_string() == tx_hash)
+                    .find(|tx| tx.hash == hash)
                     .is_some();
 
                 if tx_has_been_included {
-                    info!("transaction {:?} was included", tx_hash);
-                    updates.push(format!(
-                        r#"
-												UPDATE requests
-												SET status = 'complete'
-												WHERE id = '{}';
-												"#,
-                        id.to_string()
-                    ));
+                    info!("transaction {:?} was included", hash);
+                    updates.push((id, true, hash));
                     continue;
                 }
 
                 if block_count % self.block_frequency != 0 {
                     info!(
                         "transaction {:?} was not included, not sending replacement yet",
-                        tx_hash
+                        hash
                     );
                     continue;
                 }
 
-                info!("Rebroadcasting {:?}", tx_hash);
+                info!("Rebroadcasting {:?}", hash);
                 match self
                     .rebroadcast(
                         &mut replacement_tx,
@@ -170,41 +137,18 @@ where
                     )
                     .await?
                 {
-                    Some(new_txhash) => {
-                        info!("Transaction {:?} replaced with {:?}", tx_hash, new_txhash);
-                        updates.push(format!(
-                            r#"
-														UPDATE requests
-														SET tx_hash = '{}' 
-														WHERE id = '{}';
-														"#,
-                            format!("{:?}", new_txhash),
-                            id.to_string()
-                        ));
+                    Some(new_hash) => {
+                        info!("Transaction {:?} replaced with {:?}", hash, new_hash);
+                        updates.push((id, false, new_hash));
                         sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
                     }
                     None => {
-                        updates.push(format!(
-                            r#"
-												UPDATE requests
-												SET status = 'complete'
-												WHERE id = '{}';
-												"#,
-                            id.to_string()
-                        ));
+                        updates.push((id, true, hash));
                     }
                 }
             }
 
-            if updates.len() > 0 {
-                let mut tx = self.connection_pool.begin().await?;
-
-                for update in updates {
-                    query(&update).execute(&mut tx).await?;
-                }
-
-                tx.commit().await?;
-            }
+            self.tx_repo.update_many(updates).await?;
         }
 
         Ok(())
@@ -218,8 +162,14 @@ where
     ) -> anyhow::Result<Option<TxHash>> {
         self.bump_transaction(tx, estimate_max_fee, estimate_max_priority_fee);
 
+        info!("Sending replacement transaction {:?}", tx);
+
+        // TODO Even when tx has a nonce it will still increment it here for some reason, must be some sort of fallback thing in the provider
+        // Reproduce by changing the mined to false in one of the completed requests in the db
+        // this only happens when we haven't sent a transaction yet, checkout send_transaction in nonce manager if you want details!
         match self.provider.send_transaction(tx.clone(), None).await {
             Ok(new_tx_hash) => {
+                info!("after tx was sent {:?}", tx);
                 return Ok(Some(*new_tx_hash));
             }
             Err(err) => {
@@ -276,11 +226,4 @@ where
         let increase = (value * 10) / 100u64;
         value + increase + 1 // add 1 here for rounding purposes
     }
-}
-#[derive(FromRow, Clone, Debug)]
-struct Request {
-    id: String,
-    tx: Json<TypedTransaction>,
-    tx_hash: String,
-    status: String,
 }

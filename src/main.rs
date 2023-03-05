@@ -6,6 +6,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+
+use axum_macros::debug_handler;
 use dotenv::dotenv;
 use ethers::{
     core::types::{serde_helpers::Numeric, Address, Eip1559TransactionRequest},
@@ -66,6 +68,10 @@ async fn main() {
         .await
         .expect("Could not connect to provider");
     let provider = NonceManagerMiddleware::new(provider, address);
+    provider
+        .initialize_nonce(None)
+        .await
+        .expect("Could not initialize nonce");
     let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3, connection_pool);
 
     let shared_state = Arc::new(AppState { monitor });
@@ -84,6 +90,7 @@ async fn main() {
 }
 
 // #[tracing::instrument]
+#[debug_handler]
 async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RelayRequest>,
@@ -102,7 +109,7 @@ async fn relay_transaction(
 
 #[derive(Deserialize, Serialize)]
 struct TransactionStatus {
-    status: String,
+    mined: bool,
     hash: String,
 }
 
@@ -110,8 +117,8 @@ async fn transaction_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<TransactionStatus>, AppError> {
-    let (status, hash) = state.monitor.get_transaction_status(id).await?;
-    Ok(Json(TransactionStatus { status, hash }))
+    let (mined, hash) = state.monitor.get_transaction_status(id).await?;
+    Ok(Json(TransactionStatus { mined, hash }))
 }
 
 #[derive(Deserialize)]
