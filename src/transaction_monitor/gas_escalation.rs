@@ -7,7 +7,6 @@ pub fn bump_transaction(
     estimate_max_fee: U256,
     estimate_max_priority_fee: U256,
 ) {
-    // We should never risk getting gas too low errors because we set these vals in send_monitored_transaction
     let prev_max_priority_fee = tx
         .max_priority_fee_per_gas
         .unwrap_or(estimate_max_priority_fee);

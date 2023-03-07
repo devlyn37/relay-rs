@@ -2,7 +2,7 @@ TODO: I'm sure there's some process that people use to manage this sort of thing
 tossing this in here for now
 
 // CREATE TABLE requests (
-//   id varchar(255) NOT NULL PRIMARY KEY,
+//  id varchar(255) NOT NULL PRIMARY KEY,
 // 	tx_hash varchar(66) NOT NULL,
 // 	tx JSON NOT NULL,
 // 	mined boolean NOT NULL DEFAULT false

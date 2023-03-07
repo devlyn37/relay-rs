@@ -89,7 +89,6 @@ async fn main() {
         .unwrap();
 }
 
-// #[tracing::instrument]
 #[debug_handler]
 async fn relay_transaction(
     State(state): State<Arc<AppState>>,
@@ -139,7 +138,6 @@ impl fmt::Debug for RelayRequest {
 }
 
 struct AppError(anyhow::Error);
-// Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         (

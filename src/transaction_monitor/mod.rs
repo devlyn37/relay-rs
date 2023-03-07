@@ -167,14 +167,10 @@ where
         bump_transaction(tx, estimate_max_fee, estimate_max_priority_fee);
 
         info!("Sending replacement transaction {:?}", tx);
-
-        // TODO Even when tx has a nonce it will still increment it here for some reason, must be some sort of fallback thing in the provider
-        // Reproduce by changing the mined to false in one of the completed requests in the db
-        // this only happens when we haven't sent a transaction yet, checkout send_transaction in nonce manager if you want details!
         match self.provider.send_transaction(tx.clone(), None).await {
-            Ok(new_tx_hash) => {
+            Ok(pending) => {
                 info!("after tx was sent {:?}", tx);
-                return Ok(Some(*new_tx_hash));
+                return Ok(Some(pending.tx_hash()));
             }
             Err(err) => {
                 if err.to_string().contains("nonce too low") {
