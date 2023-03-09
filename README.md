@@ -2,7 +2,7 @@
 
 An Ethereum Transaction Relay that:
 - Manages the nonce of a single address
-- Makes sure transactions get mined
+- Makes sure transactions get included
 
 ## Routes
 
@@ -11,7 +11,10 @@ An Ethereum Transaction Relay that:
 `GET /transaction/:id`
 
 ## TODO
-- Clean API Surface
-- Authentication
-- Init Sequence
-- Multiple Addresses
+- improve API Surface
+    - handle no data param at all
+    - 404s
+    - auth
+- Init/Recovery Sequence
+- Multiple Addresses 
+- Multi Chain

@@ -16,7 +16,7 @@ use ethers::{
     signers::{LocalWallet, Signer},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::mysql::MySqlPoolOptions;
 use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
@@ -94,11 +94,11 @@ async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RelayRequest>,
 ) -> Result<String, AppError> {
-    let request = Eip1559TransactionRequest::new()
+    let mut request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
-        .data(payload.data)
         .max_priority_fee_per_gas(1);
+    request.data = payload.data.map(|data| data.into());
 
     info!("Transaction: {:?}", request);
     let id = state.monitor.send_monitored_transaction(request).await?;
@@ -120,12 +120,23 @@ async fn transaction_status(
     Ok(Json(TransactionStatus { mined, hash }))
 }
 
+#[derive(Debug, Deserialize)]
+struct WrappedHex(#[serde(with = "hex::serde")] Vec<u8>);
+
+pub fn hex_opt<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<WrappedHex>::deserialize(deserializer)
+        .map(|opt_wrapped| opt_wrapped.map(|wrapped| wrapped.0))
+}
+
 #[derive(Deserialize)]
 struct RelayRequest {
     to: Address,
     value: Numeric,
-    #[serde(with = "hex::serde")]
-    data: Vec<u8>,
+    #[serde(deserialize_with = "hex_opt")]
+    data: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for RelayRequest {
