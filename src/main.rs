@@ -135,6 +135,7 @@ where
 struct RelayRequest {
     to: Address,
     value: Numeric,
+    #[serde(default)]
     #[serde(deserialize_with = "hex_opt")]
     data: Option<Vec<u8>>,
 }
