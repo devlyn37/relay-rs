@@ -11,8 +11,6 @@ An Ethereum Transaction Relay that:
 `GET /transaction/:id`
 
 ## TODO
-- improve API Surface
-    - auth
 - Init/Recovery Sequence
 - Multiple Addresses 
 - Multi Chain

@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    middleware::{from_fn_with_state, Next},
     response::IntoResponse,
     response::Response,
     routing::{get, post},
@@ -19,7 +20,7 @@ use ethers::{
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
-use sqlx::mysql::MySqlPoolOptions;
+use sqlx::{mysql::MySqlPoolOptions, MySql, Pool};
 use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
 use uuid::Uuid;
@@ -30,9 +31,66 @@ pub use transaction_monitor::TransactionMonitor;
 type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
 type ConfigedMonitor = TransactionMonitor<ConfigedProvider>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct AppState {
-    monitor: ConfigedMonitor,
+    monitor: Arc<ConfigedMonitor>,
+    config: Arc<Config>,
+}
+
+#[derive(Debug, Clone)]
+struct Config {
+    expected_auth_header: String,
+    pk_hex_string: String,
+    provider_url: String,
+    database_url: String,
+    port: u16,
+}
+
+fn get_config() -> Config {
+    Config {
+        expected_auth_header: env::var("EXPECTED_AUTH_HEADER")
+            .expect("Missing \"EXPECTED_AUTH_HEADER\" Env Var"),
+        pk_hex_string: env::var("PK").expect("Missing \"PK\" Env Var"),
+        provider_url: env::var("PROVIDER_URL").expect("Missing \"PROVIDER_URL\" Env Var"),
+        database_url: env::var("DATABASE_URL").expect("Missing \"DATABASE_URL\" Env Var"),
+        port: env::var("PORT").map_or(3000, |s| {
+            s.parse().expect("Missing or invalid \"PORT\" Env Var")
+        }),
+    }
+}
+
+async fn setup_monitor(config: &Config, connection_pool: Pool<MySql>) -> ConfigedMonitor {
+    let signer = LocalWallet::from_str(&config.pk_hex_string)
+        .expect("Server not configured correct, invalid private key");
+    let address = signer.address();
+
+    let provider = Provider::<Http>::try_from(&config.provider_url)
+        .expect("Server not configured correctly, invalid provider url");
+    let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
+        .await
+        .expect("Could not connect to provider");
+    let provider = NonceManagerMiddleware::new(provider, address);
+    provider
+        .initialize_nonce(None)
+        .await
+        .expect("Could not initialize nonce");
+
+    TransactionMonitor::new(provider, 3, connection_pool)
+}
+
+async fn simple_auth<B>(
+    State(state): State<AppState>,
+    request: axum::http::Request<B>,
+    next: Next<B>,
+) -> Result<axum::response::Response, StatusCode> {
+    if let Some(key) = request.headers().get("authorization") {
+        if key == &state.config.expected_auth_header {
+            let response = next.run(request).await;
+            return Ok(response);
+        }
+    }
+
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 #[tokio::main]
@@ -47,41 +105,25 @@ async fn main() {
         .init();
     // console_subscriber::init();
 
-    let pk_hex_string = env::var("PK").expect("Missing \"PK\" Env Var");
-    let provider_url = env::var("PROVIDER_URL").expect("Missing \"PROVIDER_URL\" Env Var");
-    let database_url = env::var("DATABASE_URL").expect("Missing \"DATABASE_URL\" Env Var");
-    let port = env::var("PORT").map_or(3000, |s| {
-        s.parse().expect("Missing or invalid \"PORT\" Env Var")
-    });
-
+    let config = get_config();
     let connection_pool = MySqlPoolOptions::new()
         .max_connections(5)
-        .connect(&database_url)
+        .connect(&config.database_url)
         .await
         .expect("Could not connect to database");
+    let monitor: ConfigedMonitor = setup_monitor(&config, connection_pool).await;
 
-    let signer = LocalWallet::from_str(&pk_hex_string)
-        .expect("Server not configured correct, invalid private key");
-    let address = signer.address();
-
-    let provider = Provider::<Http>::try_from(provider_url)
-        .expect("Server not configured correctly, invalid provider url");
-    let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
-        .await
-        .expect("Could not connect to provider");
-    let provider = NonceManagerMiddleware::new(provider, address);
-    provider
-        .initialize_nonce(None)
-        .await
-        .expect("Could not initialize nonce");
-    let monitor: ConfigedMonitor = TransactionMonitor::new(provider, 3, connection_pool);
-
-    let shared_state = Arc::new(AppState { monitor });
+    let port = config.port;
+    let shared_state = AppState {
+        monitor: Arc::new(monitor),
+        config: Arc::new(config),
+    };
 
     let app = Router::new()
         .route("/transaction", post(relay_transaction))
         .route("/transaction/:id", get(transaction_status))
-        .with_state(shared_state);
+        .layer(from_fn_with_state(shared_state.clone(), simple_auth))
+        .with_state(Arc::new(shared_state));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!("Listening on port {}", port);

@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.68"
-axum = "0.6.4"
+axum = {version = "0.6.4", features = ["headers"]}
 dotenv = "0.15.0"
 ethers = "1.0.2"
 hex = {version = "0.4.3", features = ["serde"]}
