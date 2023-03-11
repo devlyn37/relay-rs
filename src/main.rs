@@ -7,6 +7,8 @@ use axum::{
     Json, Router,
 };
 
+use thiserror::Error;
+
 use axum_macros::debug_handler;
 use dotenv::dotenv;
 use ethers::{
@@ -93,7 +95,7 @@ async fn main() {
 async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RelayRequest>,
-) -> Result<String, AppError> {
+) -> Result<String, ServerError> {
     let mut request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
@@ -115,9 +117,16 @@ struct TransactionStatus {
 async fn transaction_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-) -> Result<Json<TransactionStatus>, AppError> {
-    let (mined, hash) = state.monitor.get_transaction_status(id).await?;
-    Ok(Json(TransactionStatus { mined, hash }))
+) -> Result<Json<TransactionStatus>, ServerError> {
+    let result = state.monitor.get_transaction_status(id).await?;
+
+    match result {
+        Some((mined, hash)) => Ok(Json(TransactionStatus { mined, hash })),
+        None => Err(ServerError::Status {
+            status: StatusCode::NOT_FOUND,
+            message: format!("Could not find transaction with id {:?}", id),
+        }),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,22 +158,24 @@ impl fmt::Debug for RelayRequest {
     }
 }
 
-struct AppError(anyhow::Error);
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Something went wrong: {}", self.0),
-        )
-            .into_response()
-    }
+#[derive(Debug, Error)]
+pub enum ServerError {
+    #[error(transparent)]
+    Fallback(#[from] anyhow::Error),
+
+    #[error("status {status:?}, message {message:?}")]
+    Status { status: StatusCode, message: String },
 }
 
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self(err.into())
+impl IntoResponse for ServerError {
+    fn into_response(self) -> Response {
+        match self {
+            ServerError::Fallback(err) => {
+                let message = format!("something went wrong: {}", err.to_string());
+                (StatusCode::INTERNAL_SERVER_ERROR, message)
+            }
+            ServerError::Status { status, message } => (status, message),
+        }
+        .into_response()
     }
 }

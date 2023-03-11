@@ -53,7 +53,7 @@ impl DbTxRequestRepository {
         Ok(())
     }
 
-    pub async fn get(&self, id: Uuid) -> anyhow::Result<Request> {
+    pub async fn get(&self, id: Uuid) -> anyhow::Result<Option<Request>> {
         let request = query_as!(
             Request,
             r#"
@@ -63,7 +63,7 @@ impl DbTxRequestRepository {
 				"#,
             id.to_string()
         )
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
         Ok(request)
     }

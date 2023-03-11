@@ -82,9 +82,9 @@ where
         Ok(id)
     }
 
-    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<(bool, String)> {
+    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<Option<(bool, String)>> {
         let request = self.tx_repo.get(id).await?;
-        Ok((request.mined, request.hash))
+        Ok(request.map(|req| (req.mined, req.hash)))
     }
 
     pub async fn monitor(&self) -> anyhow::Result<()> {

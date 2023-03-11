@@ -12,7 +12,6 @@ An Ethereum Transaction Relay that:
 
 ## TODO
 - improve API Surface
-    - 404s
     - auth
 - Init/Recovery Sequence
 - Multiple Addresses 
