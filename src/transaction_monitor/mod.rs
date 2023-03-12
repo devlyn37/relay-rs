@@ -1,6 +1,8 @@
 use ethers::{
     providers::{Middleware, StreamExt},
-    types::{transaction::eip2718::TypedTransaction, Eip1559TransactionRequest, TxHash, U256},
+    types::{
+        transaction::eip2718::TypedTransaction, Chain, Eip1559TransactionRequest, TxHash, U256,
+    },
 };
 
 use sqlx::MySqlPool;
@@ -24,6 +26,7 @@ type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = TxHash>
 #[derive(Debug)]
 pub struct TransactionMonitor<M> {
     pub provider: Arc<M>,
+    pub chain: Chain,
     pub block_frequency: u8,
     pub tx_repo: DbTxRequestRepository,
 }
@@ -32,6 +35,7 @@ impl<M> Clone for TransactionMonitor<M> {
     fn clone(&self) -> Self {
         TransactionMonitor {
             provider: self.provider.clone(),
+            chain: self.chain.clone(),
             block_frequency: self.block_frequency.clone(),
             tx_repo: self.tx_repo.clone(),
         }
@@ -42,8 +46,9 @@ impl<M> TransactionMonitor<M>
 where
     M: Middleware + 'static,
 {
-    pub fn new(provider: M, block_frequency: u8, connection_pool: MySqlPool) -> Self {
+    pub fn new(provider: M, chain: Chain, block_frequency: u8, connection_pool: MySqlPool) -> Self {
         let this = Self {
+            chain,
             provider: Arc::new(provider),
             block_frequency,
             tx_repo: DbTxRequestRepository::new(connection_pool),
@@ -77,7 +82,9 @@ where
         let pending_tx = self.provider.send_transaction(filled.clone(), None).await?;
         let id = Uuid::new_v4();
         let tx_hash = pending_tx.tx_hash();
-        self.tx_repo.save(id, tx_hash, filled.into(), false).await?;
+        self.tx_repo
+            .save(id, tx_hash, filled.into(), false, self.chain as u32)
+            .await?;
 
         Ok(id)
     }

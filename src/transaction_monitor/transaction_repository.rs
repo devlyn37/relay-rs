@@ -9,6 +9,7 @@ pub struct Request {
     pub tx: Json<Eip1559TransactionRequest>,
     pub hash: String,
     pub mined: bool,
+    pub chain: u32,
 }
 
 pub type RequestUpdate = (Uuid, bool, TxHash);
@@ -37,16 +38,18 @@ impl DbTxRequestRepository {
         hash: TxHash,
         tx: Eip1559TransactionRequest,
         mined: bool,
+        chain: u32,
     ) -> anyhow::Result<()> {
         query!(
             r#"
-					INSERT INTO requests (id, hash, tx, mined) 
-					VALUES (?, ?, ?, ?)
+					INSERT INTO requests (id, hash, tx, mined, chain) 
+					VALUES (?, ?, ?, ?, ?)
 					"#,
             id.to_string(),
             format!("{:?}", hash),
             to_string(&tx)?,
-            mined
+            mined,
+            chain
         )
         .execute(&self.pool)
         .await?;
@@ -57,7 +60,7 @@ impl DbTxRequestRepository {
         let request = query_as!(
             Request,
             r#"
-				SELECT id, hash, mined as "mined: bool", tx as "tx: Json<Eip1559TransactionRequest>"
+				SELECT id, hash, chain, mined as "mined: bool", tx as "tx: Json<Eip1559TransactionRequest>"
 				FROM requests 
 				WHERE id = ?
 				"#,
@@ -72,7 +75,7 @@ impl DbTxRequestRepository {
         let requests = query_as!(
             Request,
             r#"
-					SELECT id, hash, mined as "mined: bool", tx as "tx: Json<Eip1559TransactionRequest>"
+					SELECT id, hash, chain, mined as "mined: bool", tx as "tx: Json<Eip1559TransactionRequest>"
 					FROM requests 
 					WHERE mined = ?
 					"#,
