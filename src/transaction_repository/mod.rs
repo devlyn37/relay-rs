@@ -1,4 +1,4 @@
-use ethers::types::{Eip1559TransactionRequest, TxHash};
+use ethers::types::{Chain, Eip1559TransactionRequest, TxHash};
 use serde_json::to_string;
 use sqlx::{query, query_as, types::Json, FromRow, MySqlPool};
 use uuid::Uuid;
@@ -38,7 +38,7 @@ impl DbTxRequestRepository {
         hash: TxHash,
         tx: Eip1559TransactionRequest,
         mined: bool,
-        chain: u32,
+        chain: Chain,
     ) -> anyhow::Result<()> {
         query!(
             r#"
@@ -49,7 +49,7 @@ impl DbTxRequestRepository {
             format!("{:?}", hash),
             to_string(&tx)?,
             mined,
-            chain
+            chain as u32
         )
         .execute(&self.pool)
         .await?;
@@ -71,15 +71,16 @@ impl DbTxRequestRepository {
         Ok(request)
     }
 
-    pub async fn get_pending(&self) -> anyhow::Result<Vec<Request>> {
+    pub async fn get_pending(&self, chain: Chain) -> anyhow::Result<Vec<Request>> {
         let requests = query_as!(
             Request,
             r#"
 					SELECT id, hash, chain, mined as "mined: bool", tx as "tx: Json<Eip1559TransactionRequest>"
 					FROM requests 
-					WHERE mined = ?
+					WHERE mined = ? and chain = ?
 					"#,
-            false
+            false,
+            chain as u32
         )
         .fetch_all(&self.pool)
         .await?;

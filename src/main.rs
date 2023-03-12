@@ -14,30 +14,28 @@ use axum_macros::debug_handler;
 use dotenv::dotenv;
 use ethers::{
     core::types::{serde_helpers::Numeric, Address, Eip1559TransactionRequest},
-    middleware::{nonce_manager::NonceManagerMiddleware, signer::SignerMiddleware},
     providers::{Http, Provider},
-    signers::{LocalWallet, Signer},
+    signers::LocalWallet,
     types::Chain,
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
-use sqlx::{mysql::MySqlPoolOptions, MySql, Pool};
+use sqlx::mysql::MySqlPoolOptions;
 use std::{env, fmt, net::SocketAddr, str::FromStr, sync::Arc};
 use tracing::{info, Level};
 use uuid::Uuid;
 
 mod transaction_monitor;
+mod transaction_repository;
 pub use transaction_monitor::TransactionMonitor;
+pub use transaction_repository::DbTxRequestRepository;
 
 mod alchemy_rpc;
 pub use alchemy_rpc::get_rpc;
 
-type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
-type ConfigedMonitor = TransactionMonitor<ConfigedProvider>;
-
 #[derive(Debug, Clone)]
 struct AppState {
-    monitor: Arc<ConfigedMonitor>,
+    monitor: Arc<TransactionMonitor>,
     config: Arc<Config>,
 }
 
@@ -61,30 +59,6 @@ fn get_config() -> Config {
             s.parse().expect("Missing or invalid \"PORT\" Env Var")
         }),
     }
-}
-
-async fn setup_monitor(
-    config: &Config,
-    connection_pool: Pool<MySql>,
-    chain: Chain,
-) -> ConfigedMonitor {
-    let signer = LocalWallet::from_str(&config.pk_hex_string)
-        .expect("Server not configured correct, invalid private key");
-    let address = signer.address();
-
-    let rpc_url = get_rpc(chain, &config.alchemy_key);
-    let provider = Provider::<Http>::try_from(rpc_url)
-        .expect("Server not configured correctly, invalid provider url");
-    let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
-        .await
-        .expect("Could not connect to provider");
-    let provider = NonceManagerMiddleware::new(provider, address);
-    provider
-        .initialize_nonce(None)
-        .await
-        .expect("Could not initialize nonce");
-
-    TransactionMonitor::new(provider, 3, connection_pool)
 }
 
 async fn simple_auth<B>(
@@ -120,7 +94,22 @@ async fn main() {
         .connect(&config.database_url)
         .await
         .expect("Could not connect to database");
-    let monitor: ConfigedMonitor = setup_monitor(&config, connection_pool, Chain::Sepolia).await;
+
+    let tx_repo = DbTxRequestRepository::new(connection_pool);
+    let mut monitor = TransactionMonitor::new(tx_repo);
+    let chains = [Chain::Goerli, Chain::Sepolia];
+
+    let signer = LocalWallet::from_str(&config.pk_hex_string)
+        .expect("Server not configured correct, invalid private key");
+    for chain in chains {
+        let rpc_url = get_rpc(chain, &config.alchemy_key);
+        let provider = Provider::<Http>::try_from(rpc_url)
+            .expect("Server not configured correctly, invalid provider url");
+        monitor
+            .setup_monitor(signer.clone(), provider, chain, 3)
+            .await
+            .expect("monitors could not be setup");
+    }
 
     let port = config.port;
     let shared_state = AppState {
@@ -152,9 +141,11 @@ async fn relay_transaction(
         .value(payload.value)
         .max_priority_fee_per_gas(1);
     request.data = payload.data.map(|data| data.into());
-
     info!("Transaction: {:?}", request);
-    let id = state.monitor.send_monitored_transaction(request).await?;
+    let id = state
+        .monitor
+        .send_monitored_transaction(request, payload.chain)
+        .await?;
 
     Ok(id.to_string())
 }
@@ -196,6 +187,7 @@ struct RelayRequest {
     #[serde(default)]
     #[serde(deserialize_with = "hex_opt")]
     data: Option<Vec<u8>>,
+    chain: Chain,
 }
 
 impl fmt::Debug for RelayRequest {
