@@ -17,6 +17,7 @@ use ethers::{
     middleware::{nonce_manager::NonceManagerMiddleware, signer::SignerMiddleware},
     providers::{Http, Provider},
     signers::{LocalWallet, Signer},
+    types::Chain,
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -27,6 +28,9 @@ use uuid::Uuid;
 
 mod transaction_monitor;
 pub use transaction_monitor::TransactionMonitor;
+
+mod alchemy_rpc;
+pub use alchemy_rpc::get_rpc;
 
 type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
 type ConfigedMonitor = TransactionMonitor<ConfigedProvider>;
@@ -41,7 +45,7 @@ struct AppState {
 struct Config {
     expected_auth_header: String,
     pk_hex_string: String,
-    provider_url: String,
+    alchemy_key: String,
     database_url: String,
     port: u16,
 }
@@ -51,7 +55,7 @@ fn get_config() -> Config {
         expected_auth_header: env::var("EXPECTED_AUTH_HEADER")
             .expect("Missing \"EXPECTED_AUTH_HEADER\" Env Var"),
         pk_hex_string: env::var("PK").expect("Missing \"PK\" Env Var"),
-        provider_url: env::var("PROVIDER_URL").expect("Missing \"PROVIDER_URL\" Env Var"),
+        alchemy_key: env::var("ALCHEMY_KEY").expect("Missing \"ALCHEMY_KEY\" Env Var"),
         database_url: env::var("DATABASE_URL").expect("Missing \"DATABASE_URL\" Env Var"),
         port: env::var("PORT").map_or(3000, |s| {
             s.parse().expect("Missing or invalid \"PORT\" Env Var")
@@ -59,12 +63,17 @@ fn get_config() -> Config {
     }
 }
 
-async fn setup_monitor(config: &Config, connection_pool: Pool<MySql>) -> ConfigedMonitor {
+async fn setup_monitor(
+    config: &Config,
+    connection_pool: Pool<MySql>,
+    chain: Chain,
+) -> ConfigedMonitor {
     let signer = LocalWallet::from_str(&config.pk_hex_string)
         .expect("Server not configured correct, invalid private key");
     let address = signer.address();
 
-    let provider = Provider::<Http>::try_from(&config.provider_url)
+    let rpc_url = get_rpc(chain, &config.alchemy_key);
+    let provider = Provider::<Http>::try_from(rpc_url)
         .expect("Server not configured correctly, invalid provider url");
     let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
         .await
@@ -111,7 +120,7 @@ async fn main() {
         .connect(&config.database_url)
         .await
         .expect("Could not connect to database");
-    let monitor: ConfigedMonitor = setup_monitor(&config, connection_pool).await;
+    let monitor: ConfigedMonitor = setup_monitor(&config, connection_pool, Chain::Sepolia).await;
 
     let port = config.port;
     let shared_state = AppState {
@@ -160,9 +169,7 @@ async fn transaction_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<TransactionStatus>, ServerError> {
-    let result = state.monitor.get_transaction_status(id).await?;
-
-    match result {
+    match state.monitor.get_transaction_status(id).await? {
         Some((mined, hash)) => Ok(Json(TransactionStatus { mined, hash })),
         None => Err(ServerError::Status {
             status: StatusCode::NOT_FOUND,
