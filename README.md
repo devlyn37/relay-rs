@@ -14,5 +14,5 @@ An Ethereum Transaction Relay that:
 - Init/Recovery Sequence
 - Multiple Addresses
 - Multi Chain
-	- All EIP-1559 Chains
+	- Make sure gas estimation works reasonably across 1559 chains (looking at you polygon)
 	- All EVM Chains
