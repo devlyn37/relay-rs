@@ -1,3 +1,4 @@
+use anyhow::Context;
 use ethers::{
     prelude::{k256::ecdsa::SigningKey, NonceManagerMiddleware, SignerMiddleware},
     providers::{Http, Provider},
@@ -40,13 +41,11 @@ impl TransactionMonitor {
         tx: Eip1559TransactionRequest,
         chain: Chain,
     ) -> anyhow::Result<Uuid> {
-        let monitor = self.monitors.get(&chain);
-
-        if let Some(monitor) = monitor {
-            monitor.send_monitored_transaction(tx).await
-        } else {
-            anyhow::bail!("chain not supported, todo fix later")
-        }
+        let monitor = self
+            .monitors
+            .get(&chain)
+            .expect(&format!("monitor for chain {} not defined", chain));
+        monitor.send_monitored_transaction(tx).await
     }
 
     pub async fn setup_monitor(
@@ -59,12 +58,12 @@ impl TransactionMonitor {
         let address = signer.address();
         let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
             .await
-            .expect("Could not connect to provider");
+            .with_context(|| "Could not connect to provider")?;
         let provider = NonceManagerMiddleware::new(provider, address);
         provider
             .initialize_nonce(None)
             .await
-            .expect("Could not initialize nonce");
+            .with_context(|| "Could not init nonce")?;
 
         self.monitors.insert(
             chain,

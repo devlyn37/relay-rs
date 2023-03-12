@@ -33,6 +33,8 @@ pub use transaction_repository::DbTxRequestRepository;
 mod alchemy_rpc;
 pub use alchemy_rpc::get_rpc;
 
+static SUPPORTED_CHAINS: [Chain; 2] = [Chain::Goerli, Chain::Sepolia];
+
 #[derive(Debug, Clone)]
 struct AppState {
     monitor: Arc<TransactionMonitor>,
@@ -136,6 +138,20 @@ async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RelayRequest>,
 ) -> Result<String, ServerError> {
+    if SUPPORTED_CHAINS
+        .into_iter()
+        .find(|chain| chain == &payload.chain)
+        .is_none()
+    {
+        return Err(ServerError::Status {
+            status: StatusCode::BAD_REQUEST,
+            message: format!(
+                "Chain {:?} is not supported, this relay is setup for {:?}",
+                payload.chain, SUPPORTED_CHAINS
+            ),
+        });
+    }
+
     let mut request = Eip1559TransactionRequest::new()
         .to(payload.to)
         .value(payload.value)
