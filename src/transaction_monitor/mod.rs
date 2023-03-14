@@ -1,7 +1,9 @@
 use anyhow::Context;
 use ethers::{
-    prelude::{k256::ecdsa::SigningKey, NonceManagerMiddleware, SignerMiddleware},
-    providers::{Http, Provider},
+    prelude::{
+        k256::ecdsa::SigningKey, MiddlewareBuilder, NonceManagerMiddleware, SignerMiddleware,
+    },
+    providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer, Wallet},
     types::{Chain, Eip1559TransactionRequest},
 };
@@ -56,18 +58,17 @@ impl TransactionMonitor {
         block_frequency: u8,
     ) -> anyhow::Result<()> {
         let address = signer.address();
-        let provider = SignerMiddleware::new_with_provider_chain(provider, signer)
-            .await
-            .with_context(|| "Could not connect to provider")?;
-        let provider = NonceManagerMiddleware::new(provider, address);
-        provider
+        let chain_id = provider.get_chainid().await?;
+        let signer = signer.with_chain_id(chain_id.as_u64());
+        let configed = provider.with_signer(signer).nonce_manager(address);
+        configed
             .initialize_nonce(None)
             .await
             .with_context(|| "Could not init nonce")?;
 
         self.monitors.insert(
             chain,
-            ChainMonitor::new(provider, chain, block_frequency, self.tx_repo.clone()),
+            ChainMonitor::new(configed, chain, block_frequency, self.tx_repo.clone()),
         );
 
         Ok(())
