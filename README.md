@@ -10,7 +10,35 @@ An Ethereum Transaction Relay that:
 
 `GET /transaction/:id`
 
+## Database Setup
+
+This Project uses `MySQL` and `sqlx` right now.
+
+First, make sure to set `DATABASE_URL` in `.env`
+
+next, install sqlx-cli
+```
+cargo install sqlx-cli
+```
+
+run migrations
+```
+sqlx migrate run
+```
+
+You're good to go, everything should compile at this point!
+
+## Making Schema Changes
+
+Create a new migration file
+
+```
+sqlx migrate add <name>
+```
+
+Then add SQL to the newly created file.
 ## TODO
+- Testing
 - Init/Recovery Sequence
 - Multiple Addresses
 - Multi Chain
