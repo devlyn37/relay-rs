@@ -27,8 +27,8 @@ use uuid::Uuid;
 
 mod transaction_monitor;
 mod transaction_repository;
-pub use transaction_monitor::TransactionMonitor;
-pub use transaction_repository::DbTxRequestRepository;
+use transaction_monitor::TransactionMonitor;
+use transaction_repository::DbTxRequestRepository;
 
 mod alchemy_rpc;
 pub use alchemy_rpc::get_rpc;
