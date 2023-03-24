@@ -54,15 +54,12 @@ async fn chain_monitor_happy_path(pool: Pool<MySql>) {
     println!("Here's the latest block number {:?}", block_number);
 
     println!("Sleeping while waiting for some blocks to mine...");
-    sleep(Duration::from_secs(8)).await; // let some blocks get mined
+    sleep(Duration::from_secs(15)).await; // let some blocks get mined
     println!("Done sleeping!");
-
-    let formatted_hash =
-        TxHash::from_slice(&hex::decode(&hash[2..]).expect("transaction hash should be valid"));
     let receipt = provider
-        .get_transaction_receipt(formatted_hash)
+        .get_transaction_receipt(hash)
         .await
-        .expect("hash");
+        .expect("Grabbing the transaction hash should work");
     println!("{:?}", receipt);
 
     let block_number = provider

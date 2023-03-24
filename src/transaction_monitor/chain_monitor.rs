@@ -5,7 +5,7 @@ use ethers::{
     },
 };
 
-use std::{pin::Pin, str::FromStr, sync::Arc};
+use std::{pin::Pin, sync::Arc};
 use tracing::info;
 use uuid::Uuid;
 
@@ -109,12 +109,8 @@ where
             let mut updates: Vec<RequestUpdate> = Vec::new();
 
             for request in requests {
-                // TODO cleanup this leakiness
                 let Request { hash, id, .. } = request;
-                let hash = TxHash::from_str(&hash)?;
-                let id = Uuid::from_str(&id)?;
-
-                let mut replacement_tx: Eip1559TransactionRequest = request.tx.0.into();
+                let mut replacement_tx: Eip1559TransactionRequest = request.tx;
 
                 let tx_has_been_included = block
                     .transactions

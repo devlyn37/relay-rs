@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, str::FromStr};
 
 use async_trait::async_trait;
 use ethers::types::{Chain, Eip1559TransactionRequest, TxHash};
@@ -28,12 +28,47 @@ pub struct RequestUpdate {
 }
 
 #[derive(FromRow, Clone, Debug)]
-pub struct Request {
+pub struct RequestRecord {
     pub id: String,
     pub tx: Json<Eip1559TransactionRequest>,
     pub hash: String,
     pub mined: bool,
-    pub chain: u32,
+    pub chain: u32, // TODO is this big enough? I think so
+}
+
+pub struct Request {
+    pub id: Uuid,
+    pub tx: Eip1559TransactionRequest,
+    pub hash: TxHash,
+    pub mined: bool,
+    pub chain: Chain,
+}
+
+impl From<RequestRecord> for Request {
+    fn from(record: RequestRecord) -> Self {
+        Request {
+            id: Uuid::parse_str(&record.id)
+                .expect(&format!("Failed to parse id from record {:?}", &record)),
+            hash: TxHash::from_str(&record.hash)
+                .expect(&format!("Failed to parse TxHash from record {:?}", &record)),
+            chain: Chain::try_from(record.chain)
+                .expect(&format!("Failed to parse chain from record {:?}", &record)),
+            tx: record.tx.0,
+            mined: record.mined,
+        }
+    }
+}
+
+impl From<Request> for RequestRecord {
+    fn from(request: Request) -> Self {
+        RequestRecord {
+            id: request.id.to_string(),
+            tx: Json(request.tx),
+            hash: request.hash.to_string(),
+            mined: request.mined,
+            chain: request.chain as u32,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -83,7 +118,7 @@ impl TransactionRepository for DbTxRequestRepository {
 
     async fn get(&self, id: Uuid) -> anyhow::Result<Option<Request>> {
         let request = query_as!(
-            Request,
+            RequestRecord,
             r#"
 		SELECT id, hash, chain, mined as "mined: bool", tx as "tx: Json<Eip1559TransactionRequest>"
 		FROM requests 
@@ -93,12 +128,12 @@ impl TransactionRepository for DbTxRequestRepository {
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(request)
+        Ok(request.map(|r| r.into()))
     }
 
     async fn get_pending(&self, chain: Chain) -> anyhow::Result<Vec<Request>> {
-        let requests = query_as!(
-            Request,
+        let records = query_as!(
+            RequestRecord,
             r#"
 			SELECT id, hash, chain, mined as "mined: bool", tx as "tx: Json<Eip1559TransactionRequest>"
 			FROM requests 
@@ -109,6 +144,11 @@ impl TransactionRepository for DbTxRequestRepository {
         )
         .fetch_all(&self.pool)
         .await?;
+
+        let requests: Vec<Request> = records
+            .iter()
+            .map(|record| Request::from(record.clone()))
+            .collect();
 
         Ok(requests)
     }

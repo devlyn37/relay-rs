@@ -5,7 +5,7 @@ use ethers::{
     },
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer, Wallet},
-    types::{Chain, Eip1559TransactionRequest},
+    types::{Chain, Eip1559TransactionRequest, TxHash},
 };
 
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ impl TransactionMonitor {
         }
     }
 
-    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<Option<(bool, String)>> {
+    pub async fn get_transaction_status(&self, id: Uuid) -> anyhow::Result<Option<(bool, TxHash)>> {
         let request = self.tx_repo.get(id).await?;
         Ok(request.map(|req| (req.mined, req.hash)))
     }

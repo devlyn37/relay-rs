@@ -16,7 +16,7 @@ use ethers::{
     core::types::{serde_helpers::Numeric, Address, Eip1559TransactionRequest},
     providers::{Http, Provider},
     signers::LocalWallet,
-    types::Chain,
+    types::{Chain, TxHash},
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -169,7 +169,7 @@ async fn relay_transaction(
 #[derive(Deserialize, Serialize)]
 struct TransactionStatus {
     mined: bool,
-    hash: String,
+    hash: TxHash,
 }
 
 async fn transaction_status(
