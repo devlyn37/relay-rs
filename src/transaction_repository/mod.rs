@@ -21,7 +21,12 @@ pub trait TransactionRepository: Sync + Send + Debug {
     async fn update_many(&self, updates: Vec<RequestUpdate>) -> anyhow::Result<()>;
 }
 
-pub type RequestUpdate = (Uuid, bool, TxHash);
+pub struct RequestUpdate {
+    pub id: Uuid,
+    pub mined: bool,
+    pub hash: TxHash,
+}
+
 #[derive(FromRow, Clone, Debug)]
 pub struct Request {
     pub id: String,
@@ -112,7 +117,7 @@ impl TransactionRepository for DbTxRequestRepository {
         if updates.len() > 0 {
             let mut tx = self.pool.begin().await?;
 
-            for (id, mined, hash) in updates {
+            for RequestUpdate { id, mined, hash } in updates {
                 query!(
                     r#"
 						UPDATE requests

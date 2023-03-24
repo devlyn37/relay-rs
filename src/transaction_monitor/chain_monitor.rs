@@ -124,7 +124,11 @@ where
 
                 if tx_has_been_included {
                     info!("transaction {:?} was included", hash);
-                    updates.push((id, true, hash));
+                    updates.push(RequestUpdate {
+                        id,
+                        mined: true,
+                        hash,
+                    });
                     continue;
                 }
 
@@ -147,11 +151,19 @@ where
                 {
                     Some(new_hash) => {
                         info!("Transaction {:?} replaced with {:?}", hash, new_hash);
-                        updates.push((id, false, new_hash));
+                        updates.push(RequestUpdate {
+                            id,
+                            mined: false,
+                            hash: new_hash,
+                        });
                         sleep(Duration::from_secs(1)).await; // to avoid rate limiting TODO add retries
                     }
                     None => {
-                        updates.push((id, true, hash));
+                        updates.push(RequestUpdate {
+                            id,
+                            mined: true,
+                            hash,
+                        });
                     }
                 }
             }
