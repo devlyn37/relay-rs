@@ -11,13 +11,13 @@ use ethers::{
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::transaction_repository::DbTxRequestRepository;
+use crate::transaction_repository::{DbTxRequestRepository, TransactionRepository};
 mod chain_monitor;
 use chain_monitor::ChainMonitor;
 mod gas_escalation;
 
 type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
-type ConfigedMonitor = ChainMonitor<ConfigedProvider>;
+type ConfigedMonitor = ChainMonitor<ConfigedProvider, DbTxRequestRepository>;
 
 #[derive(Debug)]
 pub struct TransactionMonitor {

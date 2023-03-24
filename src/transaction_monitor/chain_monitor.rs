@@ -15,19 +15,19 @@ use tokio::{
 };
 
 use super::gas_escalation::bump_transaction;
-use crate::transaction_repository::{DbTxRequestRepository, Request, RequestUpdate};
+use crate::transaction_repository::{Request, RequestUpdate, TransactionRepository};
 
 type WatcherFuture<'a> = Pin<Box<dyn futures_util::stream::Stream<Item = TxHash> + Send + 'a>>;
 
 #[derive(Debug)]
-pub struct ChainMonitor<M> {
+pub struct ChainMonitor<M, T> {
     pub provider: Arc<M>,
     pub chain: Chain,
     pub block_frequency: u8,
-    pub tx_repo: DbTxRequestRepository,
+    pub tx_repo: Arc<T>,
 }
 
-impl<M> Clone for ChainMonitor<M> {
+impl<M, T> Clone for ChainMonitor<M, T> {
     fn clone(&self) -> Self {
         ChainMonitor {
             provider: self.provider.clone(),
@@ -38,21 +38,17 @@ impl<M> Clone for ChainMonitor<M> {
     }
 }
 
-impl<M> ChainMonitor<M>
+impl<M, T> ChainMonitor<M, T>
 where
     M: Middleware + 'static,
+    T: TransactionRepository + 'static,
 {
-    pub fn new(
-        provider: M,
-        chain: Chain,
-        block_frequency: u8,
-        tx_repo: DbTxRequestRepository,
-    ) -> Self {
+    pub fn new(provider: M, chain: Chain, block_frequency: u8, tx_repo: T) -> Self {
         let this = Self {
             chain,
             provider: Arc::new(provider),
             block_frequency,
-            tx_repo,
+            tx_repo: Arc::new(tx_repo),
         };
 
         {
