@@ -30,6 +30,8 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: test
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
   fmt:
     name: Rustfmt
@@ -62,3 +64,5 @@ jobs:
         with:
           command: clippy
           args: -- -D warnings
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
