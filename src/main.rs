@@ -139,10 +139,9 @@ async fn relay_transaction(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RelayRequest>,
 ) -> Result<String, ServerError> {
-    if SUPPORTED_CHAINS
+    if !SUPPORTED_CHAINS
         .into_iter()
-        .find(|chain| chain == &payload.chain)
-        .is_none()
+        .any(|chain| chain == payload.chain)
     {
         return Err(ServerError::Status {
             status: StatusCode::BAD_REQUEST,
@@ -229,7 +228,7 @@ impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         match self {
             ServerError::Fallback(err) => {
-                let message = format!("something went wrong: {}", err.to_string());
+                let message = format!("something went wrong: {}", err);
                 (StatusCode::INTERNAL_SERVER_ERROR, message)
             }
             ServerError::Status { status, message } => (status, message),

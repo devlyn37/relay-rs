@@ -31,8 +31,8 @@ impl<M, T> Clone for ChainMonitor<M, T> {
     fn clone(&self) -> Self {
         ChainMonitor {
             provider: self.provider.clone(),
-            chain: self.chain.clone(),
-            block_frequency: self.block_frequency.clone(),
+            chain: self.chain,
+            block_frequency: self.block_frequency,
             tx_repo: self.tx_repo.clone(),
         }
     }
@@ -98,7 +98,7 @@ where
                 "Block {:?} has been mined, chain = {}",
                 block_hash, self.chain
             );
-            block_count = block_count + 1;
+            block_count += 1;
 
             let block = self.provider.get_block_with_txs(block_hash).await?.unwrap();
             sleep(Duration::from_secs(1)).await; // to avoid rate limiting
@@ -115,8 +115,7 @@ where
                 let tx_has_been_included = block
                     .transactions
                     .iter()
-                    .find(|tx| tx.hash == hash)
-                    .is_some();
+                    .any(|tx| tx.hash == hash);
 
                 if tx_has_been_included {
                     info!("transaction {:?} was included", hash);
@@ -182,7 +181,7 @@ where
         match self.provider.send_transaction(tx.clone(), None).await {
             Ok(pending) => {
                 info!("after tx was sent {:?}", tx);
-                return Ok(Some(pending.tx_hash()));
+                Ok(Some(pending.tx_hash()))
             }
             Err(err) => {
                 if err.to_string().contains("nonce too low") {
@@ -190,8 +189,8 @@ where
                     return Ok(None);
                 }
 
-                return Err(anyhow::anyhow!(err));
+                Err(anyhow::anyhow!(err))
             }
-        };
+        }
     }
 }

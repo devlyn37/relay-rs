@@ -28,7 +28,7 @@ pub struct TransactionMonitor {
 impl TransactionMonitor {
     pub fn new(tx_repo: DbTxRequestRepository) -> Self {
         Self {
-            tx_repo: tx_repo,
+            tx_repo,
             monitors: HashMap::new(),
         }
     }
@@ -46,7 +46,7 @@ impl TransactionMonitor {
         let monitor = self
             .monitors
             .get(&chain)
-            .expect(&format!("monitor for chain {} not defined", chain));
+            .unwrap_or_else(|| panic!("monitor for chain {} not defined", chain));
         monitor.send_monitored_transaction(tx).await
     }
 

@@ -48,11 +48,11 @@ impl From<RequestRecord> for Request {
     fn from(record: RequestRecord) -> Self {
         Request {
             id: Uuid::parse_str(&record.id)
-                .expect(&format!("Failed to parse id from record {:?}", &record)),
+                .unwrap_or_else(|_| panic!("Failed to parse id from record {:?}", &record)),
             hash: TxHash::from_str(&record.hash)
-                .expect(&format!("Failed to parse TxHash from record {:?}", &record)),
+                .unwrap_or_else(|_| panic!("Failed to parse TxHash from record {:?}", &record)),
             chain: Chain::try_from(record.chain)
-                .expect(&format!("Failed to parse chain from record {:?}", &record)),
+                .unwrap_or_else(|_| panic!("Failed to parse chain from record {:?}", &record)),
             tx: record.tx.0,
             mined: record.mined,
         }
@@ -154,7 +154,7 @@ impl TransactionRepository for DbTxRequestRepository {
     }
 
     async fn update_many(&self, updates: Vec<RequestUpdate>) -> anyhow::Result<()> {
-        if updates.len() > 0 {
+        if !updates.is_empty() {
             let mut tx = self.pool.begin().await?;
 
             for RequestUpdate { id, mined, hash } in updates {
