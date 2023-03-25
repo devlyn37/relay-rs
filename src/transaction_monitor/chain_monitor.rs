@@ -112,10 +112,7 @@ where
                 let Request { hash, id, .. } = request;
                 let mut replacement_tx: Eip1559TransactionRequest = request.tx;
 
-                let tx_has_been_included = block
-                    .transactions
-                    .iter()
-                    .any(|tx| tx.hash == hash);
+                let tx_has_been_included = block.transactions.iter().any(|tx| tx.hash == hash);
 
                 if tx_has_been_included {
                     info!("transaction {:?} was included", hash);
