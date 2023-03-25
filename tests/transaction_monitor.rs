@@ -5,6 +5,8 @@ use ethers::{
     types::*,
     utils::Anvil,
 };
+use tracing::Level;
+use tracing_subscriber::{fmt, EnvFilter};
 
 use relay::transaction_monitor::TransactionMonitor;
 use relay::transaction_repository::DbTxRequestRepository;
@@ -13,6 +15,14 @@ use tokio::time::{sleep, Duration};
 
 #[sqlx::test]
 async fn chain_monitor_happy_path(pool: Pool<MySql>) {
+    tracing_subscriber::fmt()
+        .compact()
+        .with_file(true)
+        .with_line_number(true)
+        .with_level(true)
+        .with_max_level(Level::INFO)
+        .init();
+
     let anvil = Anvil::new().block_time(1u64).spawn();
     let chain_id = anvil.chain_id();
 
