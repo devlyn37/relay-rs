@@ -14,7 +14,7 @@ use axum_macros::debug_handler;
 use dotenv::dotenv;
 use ethers::{
     core::types::{serde_helpers::Numeric, Address, Eip1559TransactionRequest},
-    providers::{Http, Provider},
+    providers::{Provider, Ws},
     signers::LocalWallet,
     types::{Chain, TxHash},
 };
@@ -31,7 +31,7 @@ use transaction_monitor::TransactionMonitor;
 use transaction_repository::DbTxRequestRepository;
 
 mod alchemy_rpc;
-pub use alchemy_rpc::get_rpc;
+pub use alchemy_rpc::get_ws;
 
 static SUPPORTED_CHAINS: [Chain; 2] = [Chain::Goerli, Chain::Sepolia];
 
@@ -104,8 +104,9 @@ async fn main() {
     let signer = LocalWallet::from_str(&config.pk_hex_string)
         .expect("Server not configured correct, invalid private key");
     for chain in chains {
-        let rpc_url = get_rpc(chain, &config.alchemy_key);
-        let provider = Provider::<Http>::try_from(rpc_url)
+        let rpc_url = get_ws(chain, &config.alchemy_key);
+        let provider = Provider::<Ws>::connect(rpc_url)
+            .await
             .expect("Server not configured correctly, invalid provider url");
         monitor
             .setup_monitor(signer.clone(), provider, chain, 3)

@@ -1,12 +1,10 @@
 use ethers::{
-    providers::Http,
-    providers::{Middleware, Provider},
+    providers::{Middleware, Provider, Ws},
     signers::{LocalWallet, Signer},
     types::*,
     utils::Anvil,
 };
 use tracing::Level;
-use tracing_subscriber::{fmt, EnvFilter};
 
 use relay::transaction_monitor::TransactionMonitor;
 use relay::transaction_repository::DbTxRequestRepository;
@@ -28,7 +26,9 @@ async fn chain_monitor_happy_path(pool: Pool<MySql>) {
 
     println!("The chain id is {}", chain_id);
 
-    let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap();
+    let provider = Provider::<Ws>::connect(anvil.ws_endpoint())
+        .await
+        .expect("Should be able to connect to anvil");
 
     let wallet: LocalWallet = anvil.keys().first().unwrap().clone().into();
     let wallet = wallet.with_chain_id(chain_id);

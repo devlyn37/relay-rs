@@ -1,6 +1,6 @@
 use ethers::types::Chain;
 
-pub fn get_rpc(chain: Chain, key: &str) -> String {
+fn get_prefix(chain: Chain) -> String {
     let prefix = match chain {
         Chain::Mainnet => "eth-mainnet",
         Chain::Goerli => "eth-goerli",
@@ -10,5 +10,9 @@ pub fn get_rpc(chain: Chain, key: &str) -> String {
         _ => panic!("chain {} not supported", chain),
     };
 
-    format!("https://{}.g.alchemy.com/v2/{}", prefix, key)
+    prefix.to_owned()
+}
+
+pub fn get_ws(chain: Chain, key: &str) -> String {
+    format!("wss://{}.g.alchemy.com/v2/{}", get_prefix(chain), key)
 }

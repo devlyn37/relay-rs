@@ -3,7 +3,7 @@ use ethers::{
     prelude::{
         k256::ecdsa::SigningKey, MiddlewareBuilder, NonceManagerMiddleware, SignerMiddleware,
     },
-    providers::{Http, Middleware, Provider},
+    providers::{Middleware, Provider, Ws},
     signers::{LocalWallet, Signer, Wallet},
     types::{Chain, Eip1559TransactionRequest, TxHash},
 };
@@ -16,7 +16,7 @@ mod chain_monitor;
 use chain_monitor::ChainMonitor;
 mod gas_escalation;
 
-type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Http>, LocalWallet>>;
+type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Ws>, LocalWallet>>;
 type ConfigedMonitor = ChainMonitor<ConfigedProvider, DbTxRequestRepository>;
 
 #[derive(Debug)]
@@ -53,7 +53,7 @@ impl TransactionMonitor {
     pub async fn setup_monitor(
         &mut self,
         signer: Wallet<SigningKey>,
-        provider: Provider<Http>,
+        provider: Provider<Ws>,
         chain: Chain,
         block_frequency: u8,
     ) -> anyhow::Result<()> {
