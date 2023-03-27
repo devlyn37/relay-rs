@@ -37,7 +37,7 @@ static SUPPORTED_CHAINS: [Chain; 2] = [Chain::Goerli, Chain::Sepolia];
 
 #[derive(Debug, Clone)]
 struct AppState {
-    monitor: Arc<TransactionMonitor>,
+    monitor: Arc<TransactionMonitor<Ws>>,
     config: Arc<Config>,
 }
 

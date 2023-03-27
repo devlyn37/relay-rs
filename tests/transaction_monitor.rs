@@ -1,5 +1,5 @@
 use ethers::{
-    providers::{Middleware, Provider, Ws},
+    providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
     types::*,
     utils::Anvil,
@@ -26,9 +26,8 @@ async fn chain_monitor_happy_path(pool: Pool<MySql>) {
 
     println!("The chain id is {}", chain_id);
 
-    let provider = Provider::<Ws>::connect(anvil.ws_endpoint())
-        .await
-        .expect("Should be able to connect to anvil");
+    let provider =
+        Provider::<Http>::try_from(anvil.endpoint()).expect("Should be able to connect to anvil");
 
     let wallet: LocalWallet = anvil.keys().first().unwrap().clone().into();
     let wallet = wallet.with_chain_id(chain_id);

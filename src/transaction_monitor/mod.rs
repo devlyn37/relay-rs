@@ -1,9 +1,10 @@
 use anyhow::Context;
 use ethers::{
     prelude::{
-        k256::ecdsa::SigningKey, MiddlewareBuilder, NonceManagerMiddleware, SignerMiddleware,
+        k256::ecdsa::SigningKey, JsonRpcClient, MiddlewareBuilder, NonceManagerMiddleware,
+        SignerMiddleware,
     },
-    providers::{Middleware, Provider, Ws},
+    providers::{Middleware, Provider},
     signers::{LocalWallet, Signer, Wallet},
     types::{Chain, Eip1559TransactionRequest, TxHash},
 };
@@ -16,16 +17,19 @@ mod chain_monitor;
 use chain_monitor::ChainMonitor;
 mod gas_escalation;
 
-type ConfigedProvider = NonceManagerMiddleware<SignerMiddleware<Provider<Ws>, LocalWallet>>;
-type ConfigedMonitor = ChainMonitor<ConfigedProvider, DbTxRequestRepository>;
+type ConfigedProvider<P> = NonceManagerMiddleware<SignerMiddleware<Provider<P>, LocalWallet>>;
+type ConfigedMonitor<P> = ChainMonitor<ConfigedProvider<P>, DbTxRequestRepository>;
 
 #[derive(Debug)]
-pub struct TransactionMonitor {
+pub struct TransactionMonitor<P> {
     pub tx_repo: DbTxRequestRepository,
-    monitors: HashMap<Chain, ConfigedMonitor>,
+    monitors: HashMap<Chain, ConfigedMonitor<P>>,
 }
 
-impl TransactionMonitor {
+impl<P> TransactionMonitor<P>
+where
+    P: JsonRpcClient + 'static,
+{
     pub fn new(tx_repo: DbTxRequestRepository) -> Self {
         Self {
             tx_repo,
@@ -53,7 +57,7 @@ impl TransactionMonitor {
     pub async fn setup_monitor(
         &mut self,
         signer: Wallet<SigningKey>,
-        provider: Provider<Ws>,
+        provider: Provider<P>,
         chain: Chain,
         block_frequency: u8,
     ) -> anyhow::Result<()> {
