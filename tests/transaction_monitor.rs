@@ -21,14 +21,21 @@ async fn chain_monitor_happy_path(pool: Pool<MySql>) {
         .with_max_level(Level::INFO)
         .init();
 
-    let anvil = Anvil::new().block_time(1u64).spawn();
+    // Need to either set the gas values such the test txn doesn't mine
+    // fallback to dropping it from the mempool
+    let anvil = Anvil::new()
+        .args(vec![
+            "--no-mining",
+            "--gas-price",
+            "500",
+            "--base-fee",
+            "50",
+        ])
+        .spawn();
     let chain_id = anvil.chain_id();
-
-    println!("The chain id is {}", chain_id);
 
     let provider =
         Provider::<Http>::try_from(anvil.endpoint()).expect("Should be able to connect to anvil");
-
     let wallet: LocalWallet = anvil.keys().first().unwrap().clone().into();
     let wallet = wallet.with_chain_id(chain_id);
 
@@ -41,7 +48,11 @@ async fn chain_monitor_happy_path(pool: Pool<MySql>) {
         .await
         .unwrap();
 
-    let request = Eip1559TransactionRequest::new().to(recipient).value(1);
+    let request = Eip1559TransactionRequest::new()
+        .to(recipient)
+        .value(1)
+        .max_fee_per_gas(100)
+        .max_priority_fee_per_gas(1);
     let id = monitor
         .send_monitored_transaction(request, Chain::AnvilHardhat)
         .await
@@ -56,11 +67,11 @@ async fn chain_monitor_happy_path(pool: Pool<MySql>) {
     assert!(!mined);
     println!("mined {}, hash {}", mined, hash);
 
-    let block_number = provider
-        .get_block_number()
+    println!("Mining a block");
+    let test = provider
+        .request::<_, U256>("evm_mine", None::<()>)
         .await
-        .expect("Fetching block number should work");
-    println!("Here's the latest block number {:?}", block_number);
+        .expect("mining should work");
 
     println!("Sleeping while waiting for some blocks to mine...");
     sleep(Duration::from_secs(15)).await; // let some blocks get mined
@@ -83,7 +94,7 @@ async fn chain_monitor_happy_path(pool: Pool<MySql>) {
         .expect("Grabbing transaction status should work");
     assert!(result.is_some());
 
-    let (mined, hash) = result.unwrap();
+    let (mined, hash) = result.expect("The result should be some");
     println!("mined {}, hash {}", mined, hash);
     assert!(mined);
 }
