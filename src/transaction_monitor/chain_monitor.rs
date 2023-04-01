@@ -115,7 +115,10 @@ where
                 let tx_has_been_included = block.transactions.iter().any(|tx| tx.hash == hash);
 
                 if tx_has_been_included {
-                    info!("transaction {:?} was included", hash);
+                    info!(
+                        "transaction {:?} was included on chain ${:?}",
+                        hash, self.chain
+                    );
                     updates.push(RequestUpdate {
                         id,
                         mined: true,
