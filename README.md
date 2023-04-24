@@ -38,7 +38,6 @@ sqlx migrate add <name>
 
 Then add SQL to the newly created file.
 ## TODO
-- Testing
 - Init/Recovery Sequence
 - Multiple Addresses
 - Multi Chain

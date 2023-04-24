@@ -198,10 +198,12 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
         .expect("dropping transaction should work");
 
     println!("Mining blocks with dropped transactions on both chains");
+
     provider
         .request::<_, U256>("evm_mine", None::<()>)
         .await
         .expect("mining should work");
+
     mock_goerli_provider
         .request::<_, U256>("evm_mine", None::<()>)
         .await
@@ -223,21 +225,19 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
     println!("Sleeping, waiting for the monitor to process");
     sleep(Duration::from_secs(15)).await; // let some blocks get mined
 
-    // Both transactions should have been mined
+    // Check that transactions have been mined on the correct chains
+    // and that the monitor has marked them accordingly
+
     println!(
         "Checking that tx {:?} has been mined on chain {:?}",
         hash,
         Chain::AnvilHardhat
     );
-
-    // The monitor should have marked both transaction as complete
     let result = monitor
         .get_transaction_status(id)
         .await
         .expect("Grabbing transaction status should work");
-    assert!(result.is_some());
     let (mined, hash) = result.expect("The result should be some");
-
     let receipt = provider
         .get_transaction_receipt(hash)
         .await
@@ -249,7 +249,6 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
         .get_transaction_status(goerli_request_id)
         .await
         .expect("Grabbing transaction status should work");
-    assert!(goerli_result.is_some());
     let (goerli_mined, goerli_hash) = goerli_result.expect("The result should be some");
     println!("mined {}, hash {}", goerli_mined, goerli_hash);
     println!(
@@ -262,7 +261,6 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
         .await
         .expect("Grabbing the transaction hash should work");
     assert!(goerli_receipt.is_some());
-
     assert!(goerli_mined);
 }
 
