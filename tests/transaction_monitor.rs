@@ -52,12 +52,11 @@ async fn transaction_monitor_happy_path(pool: Pool<MySql>) {
         .await
         .unwrap();
 
-    let result = monitor
+    let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
-        .expect("Grabbing transaction status not error");
-    assert!(result.is_some());
-    let (mined, hash) = result.unwrap();
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     assert!(!mined);
     println!("mined {}, hash {}", mined, hash);
 
@@ -68,12 +67,11 @@ async fn transaction_monitor_happy_path(pool: Pool<MySql>) {
         .await
         .unwrap();
 
-    let result = monitor
+    let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
-        .expect("Grabbing transaction status not error");
-    assert!(result.is_some());
-    let (mined, hash) = result.unwrap();
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     assert!(!mined);
     println!("mined {}, hash {}", mined, hash);
 
@@ -86,13 +84,12 @@ async fn transaction_monitor_happy_path(pool: Pool<MySql>) {
     println!("Sleeping, waiting for the monitor to process");
     sleep(Duration::from_secs(15)).await; // let some blocks get mined
 
-    let result = monitor
+    let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
-        .expect("Grabbing transaction status should work");
-    assert!(result.is_some());
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
 
-    let (mined, hash) = result.expect("The result should be some");
     let receipt = provider
         .get_transaction_receipt(hash)
         .await
@@ -149,13 +146,11 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
         .await
         .unwrap();
 
-    let result = monitor
+    let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
-        .expect("Grabbing transaction status not error");
-    assert!(result.is_some());
-    let (mined, hash) = result.unwrap();
-    assert!(!mined);
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     println!("mined {}, hash {:?}", mined, hash);
 
     // Send a request on the second chain
@@ -165,14 +160,12 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
     let goerli_request_id = monitor
         .send_monitored_transaction(goerli_request, Chain::Goerli)
         .await
-        .unwrap();
-
-    let goerli_result = monitor
+        .expect("Sending the transaction should work");
+    let (goerli_mined, goerli_hash) = monitor
         .get_transaction_status(goerli_request_id)
         .await
-        .expect("Grabbing transaction status not error");
-    assert!(goerli_result.is_some());
-    let (goerli_mined, goerli_hash) = goerli_result.unwrap();
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     assert!(!goerli_mined);
     println!("goerli: mined {}, hash {:?}", goerli_mined, goerli_hash);
 
@@ -233,11 +226,11 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
         hash,
         Chain::AnvilHardhat
     );
-    let result = monitor
+    let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
-        .expect("Grabbing transaction status should work");
-    let (mined, hash) = result.expect("The result should be some");
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     let receipt = provider
         .get_transaction_receipt(hash)
         .await
@@ -245,11 +238,11 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
     assert!(receipt.is_some());
     assert!(mined);
 
-    let goerli_result = monitor
+    let (goerli_mined, goerli_hash) = monitor
         .get_transaction_status(goerli_request_id)
         .await
-        .expect("Grabbing transaction status should work");
-    let (goerli_mined, goerli_hash) = goerli_result.expect("The result should be some");
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     println!("mined {}, hash {}", goerli_mined, goerli_hash);
     println!(
         "Checking that tx {:?} has been mined on chain {:?}",
@@ -290,12 +283,11 @@ async fn transaction_monitor_resubmission(pool: Pool<MySql>) {
         .unwrap();
 
     // Send the first request
-    let result = monitor
+    let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
-        .expect("Grabbing transaction status not error");
-    assert!(result.is_some());
-    let (mined, hash) = result.unwrap();
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     assert!(!mined);
     println!("mined {}, hash {}", mined, hash);
 
@@ -323,13 +315,11 @@ async fn transaction_monitor_resubmission(pool: Pool<MySql>) {
     println!("Sleeping, waiting for the monitor to process");
     sleep(Duration::from_secs(15)).await; // let some blocks get mined
 
-    let result = monitor
+    let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
-        .expect("Grabbing transaction status should work");
-    assert!(result.is_some());
-
-    let (mined, hash) = result.expect("The result should be some");
+        .expect("Grabbing transaction status not error")
+        .expect("Status should exist");
     let receipt = provider
         .get_transaction_receipt(hash)
         .await
