@@ -1,8 +1,9 @@
 use ethers::{
+    prelude::k256::ecdsa::SigningKey,
     providers::{Http, Middleware, Provider},
-    signers::{LocalWallet, Signer},
+    signers::{LocalWallet, Signer, Wallet},
     types::*,
-    utils::Anvil,
+    utils::{Anvil, AnvilInstance},
 };
 use tracing::Level;
 
@@ -29,26 +30,23 @@ pub fn initialize() {
 #[sqlx::test]
 async fn transaction_monitor_happy_path(pool: Pool<MySql>) {
     initialize();
-    let anvil = Anvil::new()
-        .args(vec!["--no-mining", "--base-fee", "50"])
-        .spawn();
-    let provider =
-        Provider::<Http>::try_from(anvil.endpoint()).expect("Should be able to connect to anvil");
-    let wallet: LocalWallet = anvil.keys().first().unwrap().clone().into();
-    let wallet = wallet.with_chain_id(anvil.chain_id());
+    let mut monitor = TransactionMonitor::new(DbTxRequestRepository::new(pool));
 
+    let (anvil, provider, wallet) = setup_chain(31337, 8545).await;
     let recipient = anvil.addresses()[1];
 
-    let mut monitor = TransactionMonitor::new(DbTxRequestRepository::new(pool));
     monitor
         .setup_monitor(wallet, provider.clone(), Chain::AnvilHardhat, 1)
         .await
         .unwrap();
 
     // Send a request to one chain
-    let request = Eip1559TransactionRequest::new().to(recipient).value(1);
+
     let id = monitor
-        .send_monitored_transaction(request, Chain::AnvilHardhat)
+        .send_monitored_transaction(
+            Eip1559TransactionRequest::new().to(recipient).value(1),
+            Chain::AnvilHardhat,
+        )
         .await
         .unwrap();
 
@@ -61,9 +59,11 @@ async fn transaction_monitor_happy_path(pool: Pool<MySql>) {
     println!("mined {}, hash {}", mined, hash);
 
     // Send a request to the other
-    let request = Eip1559TransactionRequest::new().to(recipient).value(1);
     let id = monitor
-        .send_monitored_transaction(request, Chain::AnvilHardhat)
+        .send_monitored_transaction(
+            Eip1559TransactionRequest::new().to(recipient).value(1),
+            Chain::AnvilHardhat,
+        )
         .await
         .unwrap();
 
@@ -103,30 +103,16 @@ async fn transaction_monitor_happy_path(pool: Pool<MySql>) {
 #[sqlx::test]
 async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
     initialize();
-    let anvil = Anvil::new()
-        .args(vec!["--no-mining", "--base-fee", "50"])
-        .spawn();
-    let provider =
-        Provider::<Http>::try_from(anvil.endpoint()).expect("Should be able to connect to anvil");
-    let wallet: LocalWallet = anvil.keys().first().unwrap().clone().into();
-    let wallet = wallet.with_chain_id(anvil.chain_id());
-    let recipient = anvil.addresses()[1];
-
     let mut monitor = TransactionMonitor::new(DbTxRequestRepository::new(pool));
+
+    let (anvil, provider, wallet) = setup_chain(31337, 8545).await;
+    let recipient = anvil.addresses()[1];
     monitor
         .setup_monitor(wallet, provider.clone(), Chain::AnvilHardhat, 1)
         .await
-        .unwrap();
+        .expect("monitor setup should work");
 
-    let mock_goerli = Anvil::new()
-        .chain_id(5 as u64)
-        .port(3006 as u16)
-        .args(vec!["--no-mining", "--base-fee", "50"])
-        .spawn();
-    let mock_goerli_provider = Provider::<Http>::try_from(mock_goerli.endpoint())
-        .expect("Should be able to connect to anvil");
-    let mock_goerli_wallet: LocalWallet = mock_goerli.keys().first().unwrap().clone().into();
-    let mock_goerli_wallet = mock_goerli_wallet.with_chain_id(mock_goerli.chain_id());
+    let (mock_goerli, mock_goerli_provider, mock_goerli_wallet) = setup_chain(5, 3006).await;
     let mock_goerli_recipient = mock_goerli.addresses()[1];
 
     monitor
@@ -137,15 +123,16 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
             1,
         )
         .await
-        .unwrap();
+        .expect("monitor setup should work");
 
     // Send a request on the first chain
-    let request = Eip1559TransactionRequest::new().to(recipient).value(1);
     let id = monitor
-        .send_monitored_transaction(request, Chain::AnvilHardhat)
+        .send_monitored_transaction(
+            Eip1559TransactionRequest::new().to(recipient).value(1),
+            Chain::AnvilHardhat,
+        )
         .await
         .unwrap();
-
     let (mined, hash) = monitor
         .get_transaction_status(id)
         .await
@@ -154,11 +141,13 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
     println!("mined {}, hash {:?}", mined, hash);
 
     // Send a request on the second chain
-    let goerli_request = Eip1559TransactionRequest::new()
-        .to(mock_goerli_recipient)
-        .value(1);
     let goerli_request_id = monitor
-        .send_monitored_transaction(goerli_request, Chain::Goerli)
+        .send_monitored_transaction(
+            Eip1559TransactionRequest::new()
+                .to(mock_goerli_recipient)
+                .value(1),
+            Chain::Goerli,
+        )
         .await
         .expect("Sending the transaction should work");
     let (goerli_mined, goerli_hash) = monitor
@@ -260,25 +249,21 @@ async fn transaction_monitor_multiple_chains(pool: Pool<MySql>) {
 #[sqlx::test]
 async fn transaction_monitor_resubmission(pool: Pool<MySql>) {
     initialize();
-    let anvil = Anvil::new()
-        .args(vec!["--no-mining", "--base-fee", "50"])
-        .spawn();
-    let provider =
-        Provider::<Http>::try_from(anvil.endpoint()).expect("Should be able to connect to anvil");
-    let wallet: LocalWallet = anvil.keys().first().unwrap().clone().into();
-    let wallet = wallet.with_chain_id(anvil.chain_id());
+    let mut monitor = TransactionMonitor::new(DbTxRequestRepository::new(pool));
 
+    let (anvil, provider, wallet) = setup_chain(31337, 8545).await;
     let recipient = anvil.addresses()[1];
 
-    let mut monitor = TransactionMonitor::new(DbTxRequestRepository::new(pool));
     monitor
         .setup_monitor(wallet, provider.clone(), Chain::AnvilHardhat, 1)
         .await
         .unwrap();
 
-    let request = Eip1559TransactionRequest::new().to(recipient).value(1);
     let id = monitor
-        .send_monitored_transaction(request, Chain::AnvilHardhat)
+        .send_monitored_transaction(
+            Eip1559TransactionRequest::new().to(recipient).value(1),
+            Chain::AnvilHardhat,
+        )
         .await
         .unwrap();
 
@@ -328,4 +313,21 @@ async fn transaction_monitor_resubmission(pool: Pool<MySql>) {
 
     println!("mined {}, hash {}", mined, hash);
     assert!(mined);
+}
+
+async fn setup_chain(
+    chain_id: u64,
+    port: u16,
+) -> (AnvilInstance, Provider<Http>, Wallet<SigningKey>) {
+    let anvil = Anvil::new()
+        .chain_id(chain_id)
+        .port(port)
+        .args(vec!["--no-mining", "--base-fee", "50"])
+        .spawn();
+    let provider =
+        Provider::<Http>::try_from(anvil.endpoint()).expect("Should be able to connect to anvil");
+    let wallet: LocalWallet = anvil.keys().first().unwrap().clone().into();
+    let wallet = wallet.with_chain_id(anvil.chain_id());
+
+    return (anvil, provider, wallet);
 }
